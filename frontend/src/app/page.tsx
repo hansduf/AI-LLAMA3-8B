@@ -1,23 +1,35 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════════
- * 🎨 DOKAI CHAT INTERFACE - DESIGN SYSTEM DOCUMENTATION
+ * 🚀 AI-LLAMA3-8B FRONTEND - REACT/NEXT.JS APPLICATION
  * ═══════════════════════════════════════════════════════════════════════════════
  * 
- * 📋 DESIGN OVERVIEW:
- * Modern chat interface with clean, professional design
+ * 📋 STRUKTUR KOMUNIKASI FRONTEND:
  * 
- * 🎨 COLOR PALETTE:
- * - Primary: Blue gradients (#2563eb to #3b82f6)
- * - Background: Gray-50 (#f9fafb)
- * - Surface: White (#ffffff)
- * - Borders: Gray-200 (#e5e7eb)
+ * 🌐 FRONTEND ↔ BACKEND COMMUNICATION:
+ * ├── React App (localhost:3000) → HTTP Requests → FastAPI (localhost:8000)
+ * ├── fetch() API calls untuk komunikasi dengan backend
+ * ├── Real-time chat interface dengan streaming support
+ * ├── Document upload dan management system
+ * └── State management dengan React hooks
  * 
- * 🎯 KEY DESIGN FEATURES:
- * - Responsive collapsible sidebar
- * - Smooth animations (200-300ms transitions)
- * - Document library with file management
- * - Auto-resizing textarea input
- * - Gradient backgrounds for visual hierarchy
+ * 🔄 MAIN API ENDPOINTS YANG DIGUNAKAN:
+ * 1️⃣ POST /api/chat → Main chat communication dengan AI
+ * 2️⃣ POST /api/upload_document → Upload file ke backend
+ * 3️⃣ GET /api/documents → Fetch document library
+ * 4️⃣ POST /api/documents/{id}/select → Select active document
+ * 5️⃣ DELETE /api/documents/{id} → Delete document
+ * 
+ * 🎯 KOMPONEN UTAMA:
+ * - Chat Interface: Real-time messaging dengan AI
+ * - Document Library: File management dan selection
+ * - Sidebar: Navigation dan chat history
+ * - Message Input: Text input dengan file upload
+ * 
+ * � DESIGN SYSTEM:
+ * - Responsive layout dengan collapsible sidebar
+ * - Gradient backgrounds dan smooth animations
+ * - Modern glassmorphism effects
+ * - Clean typography dan consistent spacing
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 
@@ -45,7 +57,33 @@ import { useEffect, useRef, useState } from 'react';
 import MarkdownRenderer from '../components/markdown/MarkdownRenderer';
 import TableRenderer from '../components/table/TableRenderer';
 
+// 🔧 ENHANCED INTERFACES FOR SESSION-BASED DOCUMENT MANAGEMENT
+interface DocumentContext {
+  activeDocument?: Document | null;
+  selectedDocuments: string[];
+  documentSettings?: any;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: Message[];
+  createdAt: Date;
+  timestamp?: Date;      // Add optional timestamp for backward compatibility
+  isActive?: boolean;    // Add optional isActive for backward compatibility
+  // ✅ NEW: Document context per session
+  documentContext: DocumentContext;
+}
+
 interface Message {
+  /**
+   * 💬 MESSAGE INTERFACE - STRUKTUR PESAN CHAT
+   * 
+   * 🔄 KOMUNIKASI DENGAN BACKEND:
+   * - Data ini dikirim dalam POST /api/chat request body
+   * - Dan diterima dalam response dari backend FastAPI
+   * - Format JSON yang konsisten untuk frontend-backend communication
+   */
   id: string;
   content: string;
   sender: 'user' | 'bot' | 'system';
@@ -79,13 +117,6 @@ interface Message {
   };
 }
 
-interface ChatSession {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: Date;
-}
-
 interface Document {
   id: string;
   filename: string;
@@ -108,6 +139,18 @@ interface DocumentLibrary {
   documents: DocumentLibraryItem[];
   total_count: number;
   active_document: DocumentLibraryItem | null;
+}
+
+// ✅ NEW: Extended type for flexible active document handling
+interface DocumentLibraryExtended {
+  documents: DocumentLibraryItem[];
+  total_count: number;
+  active_document: DocumentLibraryItem | {
+    document_id: string;
+    filename: string;
+    file_type: string;
+    content_preview: string;
+  } | null;
 }
 
 interface ChatGroup {
@@ -137,17 +180,24 @@ interface MultiDocAnalysisResponse {
 }
 
 export default function Home() {
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [chatHistory, setChatHistory] = useState<ChatGroup[]>([]);
-  const [selectedChat, setSelectedChat] = useState<string | null>(null);
-  const [inputMessage, setInputMessage] = useState('');
-  const [currentChat, setCurrentChat] = useState<Message[]>([]);
+  console.log('🎯 [COMPONENT] Home component loaded/re-rendered');
   
-  // State untuk dokumen dan AI settings
-  const [currentDocument, setCurrentDocument] = useState<Document | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  // 🎛️ REACT STATE MANAGEMENT - STATE VARIABLES UNTUK UI DAN DATA
   
-  // Document Library State
+  // 🎨 UI STATE - Mengatur tampilan dan interaksi interface
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);  // Sidebar collapse state
+  const [selectedChat, setSelectedChat] = useState<string | null>(null);  // Active chat session
+  const [inputMessage, setInputMessage] = useState('');  // User input text
+  
+  // 💬 CHAT STATE - Data percakapan dan history
+  const [chatHistory, setChatHistory] = useState<ChatGroup[]>([]);  // All chat sessions
+  const [currentChat, setCurrentChat] = useState<Message[]>([]);  // Current active chat messages
+  
+  // 📄 DOCUMENT STATE - Manajemen dokumen dan file upload
+  const [currentDocument, setCurrentDocument] = useState<Document | null>(null);  // Selected document
+  const [isUploading, setIsUploading] = useState(false);  // Upload progress state
+  
+  // 📚 DOCUMENT LIBRARY STATE - Backend document library management
   const [documentLibrary, setDocumentLibrary] = useState<DocumentLibrary>({
     documents: [],
     total_count: 0,
@@ -226,29 +276,86 @@ export default function Home() {
   };
 
   // 💬 Chat selection with visual state management
+  // 💬 Chat selection with document context restoration
   const handleChatSelect = (chatId: string) => {
     setSelectedChat(chatId);
-    // Find and set current chat messages
+    // Find and set current chat messages and restore document context
     for (const group of chatHistory) {
       const chat = group.items.find(item => item.id === chatId);
       if (chat) {
         setCurrentChat(chat.messages);
+        
+        // ✅ NEW: Restore document context for this chat session
+        if (chat.documentContext) {
+          setCurrentDocument(chat.documentContext.activeDocument || null);
+          setSelectedDocuments(chat.documentContext.selectedDocuments || []);
+          
+          // Update documentLibrary to reflect active document for this session
+          if (chat.documentContext.activeDocument) {
+            // ✅ FIXED: Add null safety checks
+            const activeDoc = chat.documentContext.activeDocument;
+            setDocumentLibrary(prev => ({
+              ...prev,
+              active_document: {
+                document_id: activeDoc.id,
+                filename: activeDoc.filename,
+                file_type: activeDoc.filename.includes('.pdf') ? '.pdf' : '.docx',
+                content_preview: activeDoc.content ? activeDoc.content.substring(0, 200) + '...' : '',
+                // ✅ NEW: Add missing required properties
+                upload_date: new Date().toISOString(),
+                file_size: activeDoc.content ? activeDoc.content.length : 0,
+                is_active: true,
+                analysis_summary: null
+              }
+            }));
+          } else {
+            setDocumentLibrary(prev => ({
+              ...prev,
+              active_document: null
+            }));
+          }
+        } else {
+          // Fallback: clear document context if no context saved
+          setCurrentDocument(null);
+          setSelectedDocuments([]);
+          setDocumentLibrary(prev => ({
+            ...prev,
+            active_document: null
+          }));
+        }
+        
+        console.log(`🔄 Chat selected: ${chatId}, Document context restored`);
         break;
       }
     }
   };
 
-  // ➕ Create new chat with smart date grouping
-  const createNewChat = () => {
-    const newChatId = Math.random().toString(36).substring(7);
+  // ➕ Create new chat with smart date grouping and isolated document context
+  const createNewChat = async () => {
+    // Create session in backend first
+    const sessionId = await createNewSession('New Conversation');
+    if (!sessionId) {
+      console.error('Failed to create backend session');
+      return;
+    }
+    
     const currentDate = new Date();
-    const monthYear = currentDate.toISOString().slice(0, 7); // YYYY-MM
+    const monthYear = currentDate.toLocaleDateString('en-US', { 
+      month: 'long', 
+      year: 'numeric' 
+    });
 
     const newChat: ChatSession = {
-      id: newChatId,
+      id: sessionId,  // Use backend session ID
       title: 'New Conversation',
       messages: [],
-      createdAt: currentDate
+      createdAt: currentDate,
+      // ✅ NEW: Initialize empty document context per session
+      documentContext: {
+        activeDocument: null,
+        selectedDocuments: [],
+        documentSettings: {}
+      }
     };
 
     // Check if we already have a group for this month
@@ -267,8 +374,20 @@ export default function Home() {
       setChatHistory([newGroup, ...chatHistory]);
     }
 
-    setSelectedChat(newChatId);
+    setSelectedChat(sessionId);  // Use sessionId instead of newChatId
     setCurrentChat([]);
+    
+    // ✅ NEW: Clear global document state when creating new chat
+    setCurrentDocument(null);
+    setSelectedDocuments([]);
+    setDocumentLibrary(prev => ({
+      ...prev,
+      active_document: null
+    }));
+    
+    console.log(`✅ New chat created with ID: ${sessionId}`);
+    
+    return sessionId;  // Return the session ID for use in handleSendMessage
   };
 
   // ✏️ Rename chat function
@@ -345,51 +464,63 @@ export default function Home() {
   };
 
   // 📚 Document Selection Functions - Unified Selection System
+  // 📚 Document Selection Functions - Session-Isolated Selection System
   const toggleDocumentSelection = async (documentId: string) => {
     // Check if this document is currently selected
     const isCurrentlySelected = selectedDocuments.includes(documentId);
     
     if (isCurrentlySelected) {
       // Remove from selection
-      setSelectedDocuments(prev => prev.filter(id => id !== documentId));
-    } else {
-      // Add to selection and optionally set as active for single selection
-      setSelectedDocuments(prev => [...prev, documentId]);
+      const newSelection = selectedDocuments.filter(id => id !== documentId);
+      setSelectedDocuments(newSelection);
       
-      // If this is the first and only document selected, also set as active in backend
+      // If no documents left selected, clear active document
+      if (newSelection.length === 0) {
+        setCurrentDocument(null);
+      }
+    } else {
+      // Add to selection and set as active for current chat session only
+      const newSelection = [...selectedDocuments, documentId];
+      setSelectedDocuments(newSelection);
+      
+      // If this is the first document selected, set as active for current session
       if (selectedDocuments.length === 0) {
         try {
-          await selectDocument(documentId);
+          // Find document data
+          const selectedDoc = documentLibrary.documents?.find(doc => doc.document_id === documentId);
+          if (selectedDoc) {
+            const newCurrentDocument = {
+              id: selectedDoc.document_id,
+              filename: selectedDoc.filename,
+              content: selectedDoc.content_preview || ''
+            };
+            setCurrentDocument(newCurrentDocument);
+          }
         } catch (error) {
           console.error('Failed to set active document:', error);
         }
       }
     }
+    
+    // ✅ NEW: Save document context to current chat session
+    setTimeout(() => saveDocumentContextToCurrentChat(), 100);
   };
 
   const selectAllDocuments = () => {
-    const allDocumentIds = documentLibrary.documents.map(doc => doc.document_id);
+    const allDocumentIds = documentLibrary?.documents?.map(doc => doc.document_id) || [];
     setSelectedDocuments(allDocumentIds);
+    
+    // ✅ NEW: Save document context to current chat session
+    setTimeout(() => saveDocumentContextToCurrentChat(), 100);
   };
 
   const clearDocumentSelections = async () => {
     setSelectedDocuments([]);
+    setCurrentDocument(null);
     
-    // Also clear active document in backend
-    try {
-      await fetch('http://localhost:8000/api/documents/clear-selection', {
-        method: 'POST'
-      });
-      
-      // Update local state
-      setCurrentDocument(null);
-      setDocumentLibrary(prev => ({
-        ...prev,
-        active_document: null
-      }));
-    } catch (error) {
-      console.error('Failed to clear active document:', error);
-    }
+    // ✅ NEW: No backend call needed, just clear for current session
+    // ✅ NEW: Save document context to current chat session
+    setTimeout(() => saveDocumentContextToCurrentChat(), 100);
   };
 
   // Smart title generation function
@@ -412,6 +543,61 @@ export default function Home() {
     }
     
     return title.length > 50 ? title.substring(0, 47) + '...' : title;
+  };
+
+  // ✅ NEW: Update session title in backend database
+  const updateSessionTitle = async (sessionId: string, newTitle: string): Promise<boolean> => {
+    try {
+      console.log(`🏷️ Updating session ${sessionId} title to: ${newTitle}`);
+      
+      const response = await fetch(`http://localhost:8000/api/chat/sessions/${sessionId}/title`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: newTitle
+        })
+      });
+
+      if (!response.ok) {
+        console.error(`Failed to update session title: ${response.status}`);
+        return false;
+      }
+
+      const result = await response.json();
+      console.log(`✅ Session title updated successfully: ${result.new_title}`);
+      return true;
+      
+    } catch (error) {
+      console.error('Error updating session title:', error);
+      return false;
+    }
+  };
+
+  // ✅ NEW: Helper function to save document context to current chat session
+  const saveDocumentContextToCurrentChat = () => {
+    if (!selectedChat) return;
+    
+    const updatedHistory = chatHistory.map(group => ({
+      ...group,
+      items: group.items.map(chat => {
+        if (chat.id === selectedChat) {
+          return {
+            ...chat,
+            documentContext: {
+              activeDocument: currentDocument,
+              selectedDocuments: [...selectedDocuments],
+              documentSettings: {}
+            }
+          };
+        }
+        return chat;
+      })
+    }));
+    
+    setChatHistory(updatedHistory);
+    console.log(`💾 Document context saved for chat: ${selectedChat}`);
   };
 
   const handleMultiDocumentAnalysis = async () => {
@@ -723,6 +909,31 @@ export default function Home() {
   };
 
   const handleSendMessage = async () => {
+    /**
+     * 🚀 MAIN COMMUNICATION FUNCTION - FRONTEND → BACKEND
+     * 
+     * 🔄 FLOW KOMUNIKASI:
+     * 1️⃣ Validasi input dan state
+     * 2️⃣ Kirim POST request ke backend /api/chat
+     * 3️⃣ Process response dari AI model
+     * 4️⃣ Update UI dengan hasil chat
+     * 
+     * 📊 DATA YANG DIKIRIM KE BACKEND:
+     * - message: User input text
+     * - context: Document context (jika ada)
+     * - conversation_history: Chat history
+     * 
+     * 📥 DATA YANG DITERIMA DARI BACKEND:
+     * - response: AI model response
+     * - timing_info: Performance data
+     * - formatting_data: Table/markdown formatting
+     */
+    
+    console.log('🚀 [DEBUG] handleSendMessage called');
+    console.log('🚀 [DEBUG] Current selectedChat:', selectedChat);
+    console.log('🚀 [DEBUG] Input message:', inputMessage.trim());
+    console.log('🚀 [DEBUG] Current chatHistory:', chatHistory);
+
     // Check if multi-document mode is active and documents are selected
     // Auto-detect mode: Multi-document if more than 1 selected
     if (selectedDocuments.length > 1) {
@@ -759,7 +970,99 @@ export default function Home() {
       }
     }
 
-    console.log('🚀 [FRONTEND] Starting new chat request');
+    // ✅ NEW: Auto-create chat session if none exists
+    // This handles the case when user opens the app and immediately starts typing
+    // without manually creating a new chat session first
+    let currentSelectedChat = selectedChat;
+    console.log('🔍 [DEBUG] Checking selectedChat:', currentSelectedChat);
+    
+    // If no session selected, create one automatically
+    if (!currentSelectedChat) {
+      console.log('🆕 No session selected, creating new session...');
+      try {
+        const newSessionId = await createNewChat();
+        if (newSessionId) {
+          currentSelectedChat = newSessionId; // Use the returned session ID
+          console.log(`✅ New session created: ${currentSelectedChat}`);
+        } else {
+          console.error('❌ Failed to create session, aborting message send');
+          alert('Failed to create chat session. Please try again.');
+          return;
+        }
+      } catch (error) {
+        console.error('❌ Error creating session:', error);
+        alert('Failed to create chat session. Please try again.');
+        return;
+      }
+    }
+    console.log('🔍 [DEBUG] Current chatHistory length:', chatHistory.length);
+    
+    if (!currentSelectedChat) {
+      console.log('🆕 No active chat session, creating new one automatically');
+      
+      // Get the newChatId from createNewChat before using it
+      const newChatId = Math.random().toString(36).substring(7);
+      const currentDate = new Date();
+      const monthYear = currentDate.toISOString().slice(0, 7); // YYYY-MM
+
+      console.log('🔧 [DEBUG] Creating new chat with ID:', newChatId);
+      console.log('🔧 [DEBUG] MonthYear:', monthYear);
+
+      const newChat: ChatSession = {
+        id: newChatId,
+        title: 'New Conversation',
+        messages: [],
+        createdAt: currentDate,
+        documentContext: {
+          activeDocument: null,
+          selectedDocuments: [],
+          documentSettings: {}
+        }
+      };
+
+      console.log('🔧 [DEBUG] Created newChat object:', newChat);
+
+      // Update chat history immediately
+      const existingGroupIndex = chatHistory.findIndex(group => group.date === monthYear);
+      let updatedHistory;
+      
+      console.log('🔧 [DEBUG] Existing group index:', existingGroupIndex);
+      
+      if (existingGroupIndex !== -1) {
+        updatedHistory = [...chatHistory];
+        updatedHistory[existingGroupIndex].items = [newChat, ...updatedHistory[existingGroupIndex].items];
+        console.log('🔧 [DEBUG] Added to existing group');
+      } else {
+        const newGroup: ChatGroup = {
+          date: monthYear,
+          items: [newChat]
+        };
+        updatedHistory = [newGroup, ...chatHistory];
+        console.log('🔧 [DEBUG] Created new group:', newGroup);
+      }
+      
+      console.log('🔧 [DEBUG] Updated history:', updatedHistory);
+      
+      setChatHistory(updatedHistory);
+      setSelectedChat(newChatId);
+      setCurrentChat([]);
+      
+      // Clear document state
+      setCurrentDocument(null);
+      setSelectedDocuments([]);
+      setDocumentLibrary(prev => ({
+        ...prev,
+        active_document: null
+      }));
+      
+      currentSelectedChat = newChatId;
+      console.log('✅ New chat session created with ID:', newChatId);
+      console.log('✅ currentSelectedChat set to:', currentSelectedChat);
+    } else {
+      console.log('✅ Using existing chat session:', currentSelectedChat);
+    }
+
+    console.log('🚀 [FRONTEND] Starting new chat request with selectedChat:', currentSelectedChat);
     setIsStreaming(true);
     
     // Create user message with document context if available
@@ -769,13 +1072,17 @@ export default function Home() {
       sender: 'user',
       timestamp: new Date(),
       // Add document context info for user message if active document exists
-      documentInfo: documentLibrary.active_document ? {
-        document_id: documentLibrary.active_document.document_id,
-        filename: documentLibrary.active_document.filename,
-        file_type: documentLibrary.active_document.file_type,
-        context_info: `Discussing: ${documentLibrary.active_document.filename}`
+      documentInfo: (currentDocument || documentLibrary.active_document) ? {
+        document_id: currentDocument?.id || documentLibrary.active_document?.document_id || '',
+        filename: currentDocument?.filename || documentLibrary.active_document?.filename || '',
+        file_type: currentDocument?.filename?.includes('.pdf') ? '.pdf' : '.docx',
+        context_info: `Discussing: ${currentDocument?.filename || documentLibrary.active_document?.filename}`
       } : undefined
     };
+
+    console.log('🏷️ [DEBUG] User message documentInfo:', newMessage.documentInfo);
+    console.log('🏷️ [DEBUG] currentDocument:', currentDocument);
+    console.log('🏷️ [DEBUG] documentLibrary.active_document:', documentLibrary.active_document);
 
     // Clear input immediately
     setInputMessage('');
@@ -793,21 +1100,41 @@ export default function Home() {
     const chatWithBothMessages = [...currentChat, newMessage, initialBotMessage];
     setCurrentChat(chatWithBothMessages);
 
-    // Update chat history
-    const updatedHistory = chatHistory.map(group => ({
-      ...group,
-      items: group.items.map(chat => {
-        if (chat.id === selectedChat) {
-          return {
-            ...chat,
-            title: chat.messages.length === 0 ? inputMessage.substring(0, 30) : chat.title,
-            messages: chatWithBothMessages
-          };
-        }
-        return chat;
-      })
-    }));
-    setChatHistory(updatedHistory);
+    // Update chat history - ensuring we have a valid selectedChat
+    console.log('📝 [DEBUG] Updating chat history with currentSelectedChat:', currentSelectedChat);
+    console.log('📝 [DEBUG] chatWithBothMessages:', chatWithBothMessages);
+    
+    // ✅ NEW: Check if this is the first message to update title
+    const isFirstMessage = currentChat.length === 0;
+    let newTitle = '';
+    
+    // ✅ FIX: Use setChatHistory with function to get latest state
+    setChatHistory(currentHistoryState => {
+      const finalUpdatedHistory = currentHistoryState.map(group => ({
+        ...group,
+        items: group.items.map(chat => {
+          if (chat.id === currentSelectedChat) {
+            console.log('📝 [DEBUG] Found matching chat, updating:', chat.id);
+            
+            // ✅ NEW: Generate smart title for first message
+            if (chat.title === 'New Conversation' && isFirstMessage) {
+              newTitle = generateChatTitle(inputMessage.trim());
+              console.log(`🏷️ [DEBUG] Generated new title: ${newTitle}`);
+            }
+            
+            return {
+              ...chat,
+              title: chat.title === 'New Conversation' && isFirstMessage ? newTitle : chat.title,
+              messages: chatWithBothMessages
+            };
+          }
+          return chat;
+        })
+      }));
+      
+      console.log('📝 [DEBUG] Final updatedHistory:', finalUpdatedHistory);
+      return finalUpdatedHistory;
+    });
 
     // Initialize timeout and controller for request management
     // TIMEOUT ALIGNMENT - ULTRA-EXTENDED FOR VERY COMPLEX ANALYSIS:
@@ -832,22 +1159,42 @@ export default function Home() {
         content: msg.content
       }));
 
-      // Send message to backend with extended timeout for thorough analysis
+      // 📡 KIRIM REQUEST KE BACKEND FASTAPI
+      // Komunikasi HTTP dengan backend untuk mendapatkan AI response
       const controller = new AbortController();
       timeoutId = setTimeout(() => controller.abort(), 1510000); // BACKEND: 1500s + 10s buffer for network latency
       
       const response = await fetch('http://localhost:8000/api/chat', {
+        /**
+         * 🔄 HTTP POST REQUEST KE BACKEND
+         * 
+         * 📊 REQUEST STRUCTURE:
+         * - URL: Backend FastAPI server endpoint
+         * - Method: POST untuk mengirim data chat
+         * - Headers: JSON content type
+         * - Body: Data chat yang akan dikirim ke AI model
+         * - Signal: Abort controller untuk timeout handling
+         */
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          message: newMessage.content,
-          context: currentDocument?.content ? 
+          // 💬 DATA YANG DIKIRIM KE BACKEND:
+          message: newMessage.content,  // User input message
+          session_id: currentSelectedChat,  // Use currentSelectedChat instead of getCurrentSessionId()
+          context: currentDocument?.content ?   // Document context untuk AI
             (currentDocument.content.length > 6000 ? 
              currentDocument.content.substring(0, 6000) + "..." : 
              currentDocument.content) : null,  // REDUCED: 6KB for speed optimization
-          conversation_history: conversationHistory  // Add conversation history
+          conversation_history: conversationHistory,  // Chat history untuk context
+          // ✅ NEW: Send document info for proper badge display
+          document_context: (currentDocument || documentLibrary.active_document) ? {
+            document_id: currentDocument?.id || documentLibrary.active_document?.document_id,
+            filename: currentDocument?.filename || documentLibrary.active_document?.filename,
+            file_type: currentDocument?.filename?.includes('.pdf') ? '.pdf' : 
+                      documentLibrary.active_document?.file_type || '.docx'
+          } : null
         }),
         signal: controller.signal
       });
@@ -855,7 +1202,12 @@ export default function Home() {
       clearTimeout(timeoutId);
       console.log('Response status:', response.status); // Debug log
 
+      // 📥 HANDLE RESPONSE DARI BACKEND
       if (!response.ok) {
+        /**
+         * 🚨 ERROR HANDLING - RESPONSE DARI BACKEND
+         * Handle berbagai jenis error yang mungkin terjadi dari backend FastAPI
+         */
         // Handle specific status codes
         if (response.status === 504) {
           throw new Error('Request timed out. Try asking a shorter question or restart Ollama service.');
@@ -874,16 +1226,30 @@ export default function Home() {
         }
       }
 
-      // Handle response with enhanced document context
+      // 📥 PROCESS RESPONSE DATA DARI BACKEND
       const result = await response.json();
       console.log('Backend response result:', result); // Debug log
+      console.log('🔍 [DEBUG] Backend document_context:', result.document_context);
+      console.log('🔍 [DEBUG] Current frontend document info:', {
+        currentDocument,
+        active_document: documentLibrary.active_document
+      });
       
+      /**
+       * 🎨 PARSE RESPONSE DATA DARI BACKEND
+       * 
+       * 📊 STRUKTUR DATA YANG DITERIMA:
+       * - result.response: AI model response text
+       * - result.timing: Performance data
+       * - result.enhanced_formatting: Table/markdown data
+       * - result.document_context: Document info
+       */
       let finalBotMessage: Message;
       
       if (result.response) {
         finalBotMessage = {
           id: botMessageId,
-          content: result.response,
+          content: result.response,  // 🤖 AI response dari backend
           sender: 'bot',
           timestamp: new Date(),
           // Add document context info if available
@@ -892,6 +1258,13 @@ export default function Home() {
             filename: result.document_context.display_name,
             file_type: result.document_context.file_type,
             context_info: result.document_context.context_info
+          } : (currentDocument || documentLibrary.active_document) ? {
+            // ✅ FALLBACK: Use frontend document info if backend doesn't return document_context
+            document_id: currentDocument?.id || documentLibrary.active_document?.document_id || '',
+            filename: currentDocument?.filename || documentLibrary.active_document?.filename || '',
+            file_type: currentDocument?.filename?.includes('.pdf') ? '.pdf' : 
+                      documentLibrary.active_document?.file_type || '.docx',
+            context_info: `Context: ${currentDocument?.filename || documentLibrary.active_document?.filename}`
           } : undefined,
           messageType: result.chat_context?.has_document_context ? 'chat' : 'chat',
           // Enhanced table formatting support
@@ -908,7 +1281,12 @@ export default function Home() {
             word_count: result.word_count
           } : undefined
         };
-        console.log('Got AI response:', result.response); // Debug log
+        console.log('Got AI response:', result.response.substring(0, 100) + '...'); // Debug log (truncated)
+        console.log('🏷️ [DEBUG] Final AI documentInfo:', finalBotMessage.documentInfo);
+        console.log('🔍 [DEBUG] Document info source:', {
+          from_backend: !!result.document_context,
+          from_frontend_fallback: !result.document_context && !!(currentDocument || documentLibrary.active_document)
+        });
         console.log('📝 [FRONTEND DEBUG] Markdown data received:', {
           markdown_formatting: result.markdown_formatting,
           markdown_metadata: result.markdown_metadata,
@@ -940,20 +1318,30 @@ export default function Home() {
       setCurrentChat(finalChatMessages);
       console.log('Updated chat with final response'); // Debug log
 
-      // Update chat history with final response
-      const finalHistory = updatedHistory.map(group => ({
-        ...group,
-        items: group.items.map(chat => {
-          if (chat.id === selectedChat) {
-            return {
-              ...chat,
-              messages: finalChatMessages
-            };
-          }
-          return chat;
-        })
-      }));
-      setChatHistory(finalHistory);
+      // ✅ NEW: Update title in database if this was the first message
+      if (isFirstMessage && newTitle && currentSelectedChat) {
+        console.log(`🏷️ [DEBUG] Updating title in database for first message: ${newTitle}`);
+        updateSessionTitle(currentSelectedChat, newTitle).catch(error => {
+          console.error('Failed to update session title in database:', error);
+        });
+      }
+
+      // Update chat history with final response using setState function
+      setChatHistory(currentHistoryState => {
+        const finalHistory = currentHistoryState.map(group => ({
+          ...group,
+          items: group.items.map(chat => {
+            if (chat.id === currentSelectedChat) {
+              return {
+                ...chat,
+                messages: finalChatMessages
+              };
+            }
+            return chat;
+          })
+        }));
+        return finalHistory;
+      });
 
       // CRITICAL: Reset streaming state after successful response
       setIsStreaming(false);
@@ -1009,6 +1397,21 @@ export default function Home() {
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    /**
+     * 📤 FILE UPLOAD FUNCTION - FRONTEND → BACKEND
+     * 
+     * 🔄 FLOW KOMUNIKASI:
+     * 1️⃣ Validasi file type (PDF/DOCX only)
+     * 2️⃣ Kirim file ke backend via POST /api/upload_document
+     * 3️⃣ Backend process file dan extract text
+     * 4️⃣ Update document library dan set as active
+     * 
+     * 📊 DATA YANG DIKIRIM:
+     * - file: File object dalam FormData
+     * 📥 DATA YANG DITERIMA:
+     * - document_id: ID dokumen baru
+     * - content: Extracted text dari dokumen
+     */
     const file = event.target.files?.[0];
     if (!file) return;
     
@@ -1022,34 +1425,54 @@ export default function Home() {
     try {
       setIsUploading(true);
       
+      // 📤 PREPARE DAN KIRIM FILE KE BACKEND
       const formData = new FormData();
       formData.append('file', file);
       
       const response = await fetch('http://localhost:8000/api/upload_document', {
+        /**
+         * 📡 HTTP POST REQUEST - FILE UPLOAD
+         * Mengirim file ke backend FastAPI untuk processing
+         */
         method: 'POST',
-        body: formData,
+        body: formData,  // FormData dengan file
       });
 
       if (!response.ok) {
         throw new Error('Failed to upload document');
       }
 
+      // 📥 PROCESS RESPONSE DARI BACKEND
       const document = await response.json();
-      setCurrentDocument(document);
+      
+      // ✅ NEW: Only set document for current chat session
+      const newCurrentDocument = {
+        id: document.document_id,
+        filename: document.filename,
+        content: document.content
+      };
+      
+      setCurrentDocument(newCurrentDocument);
+      
+      // Add to selected documents for current session only
+      setSelectedDocuments([document.document_id]);
+      
+      // ✅ NEW: Save document context to current chat session
+      setTimeout(() => saveDocumentContextToCurrentChat(), 100);
       
       // Add system message to chat about document upload
       if (document.chat_notification) {
         const systemMessage: Message = {
           id: Math.random().toString(36).substring(7),
-          content: document.chat_notification.message,
+          content: `📄 Document uploaded and added to this chat: ${document.filename}`,
           sender: 'system',
           timestamp: new Date(),
           messageType: 'document_upload',
           documentInfo: {
-            document_id: document.chat_notification.document_info.document_id,
-            filename: document.chat_notification.document_info.filename,
-            file_type: document.chat_notification.document_info.file_type,
-            context_info: `📄 Document processed: ${document.chat_notification.document_info.filename}`
+            document_id: document.document_id,
+            filename: document.filename,
+            file_type: document.file_type || (document.filename.includes('.pdf') ? '.pdf' : '.docx'),
+            context_info: `📄 Document processed: ${document.filename}`
           }
         };
         
@@ -1065,7 +1488,13 @@ export default function Home() {
               if (chat.id === selectedChat) {
                 return {
                   ...chat,
-                  messages: updatedChat
+                  messages: updatedChat,
+                  // ✅ NEW: Save document context to chat session
+                  documentContext: {
+                    activeDocument: newCurrentDocument,
+                    selectedDocuments: [document.document_id],
+                    documentSettings: {}
+                  }
                 };
               }
               return chat;
@@ -1078,19 +1507,13 @@ export default function Home() {
       // Reload document library to show new document
       await loadDocumentLibrary();
       
-      // CRITICAL: Update currentDocument state to the newly uploaded document
-      setCurrentDocument({
-        id: document.document_id,
-        filename: document.filename,
-        content: document.content
-      });
-      console.log(`📄 currentDocument updated to newly uploaded: ${document.filename}`);
+      console.log(`📄 Document uploaded to current chat session: ${document.filename}`);
       
       // Show document library after upload
       setShowDocumentLibrary(true);
       
-      // Tambahkan notifikasi bahwa dokumen berhasil diunggah
-      alert(`📄 Document ${file.name} berhasil diunggah dan diset sebagai active document!`);
+      // Notification - clarify it's for current chat only
+      alert(`📄 Document ${file.name} berhasil diunggah dan ditambahkan ke chat ini!`);
       
     } catch (error) {
       console.error('Error uploading document:', error);
@@ -1100,8 +1523,16 @@ export default function Home() {
     }
   };
 
-  // Document Library Functions
+  // 📚 DOCUMENT LIBRARY FUNCTIONS - KOMUNIKASI DENGAN BACKEND
   const loadDocumentLibrary = async () => {
+    /**
+     * 📥 LOAD DOCUMENT LIBRARY DARI BACKEND
+     * 
+     * 🔄 KOMUNIKASI:
+     * - GET /api/documents → Mengambil semua dokumen dari backend
+     * - Update state documentLibrary dengan data dari server
+     * - Sync dengan selection state jika diperlukan
+     */
     try {
       setIsLoadingLibrary(true);
       const response = await fetch('http://localhost:8000/api/documents');
@@ -1111,17 +1542,25 @@ export default function Home() {
       }
       
       const library = await response.json();
-      setDocumentLibrary(library);
+      
+      // ✅ NULL SAFETY CHECK - Pastikan library memiliki struktur yang benar
+      const safeLibrary = {
+        documents: library?.documents || [],
+        total_count: library?.total_count || 0,
+        active_document: library?.active_document || null
+      };
+      
+      setDocumentLibrary(safeLibrary);  // 📊 Update state dengan data dari backend
       
       // Sync with current selection - if we have an active document and no current selections
-      if (library.active_document && selectedDocuments.length === 0) {
-        setSelectedDocuments([library.active_document.document_id]);
+      if (safeLibrary?.active_document && selectedDocuments.length === 0) {
+        setSelectedDocuments([safeLibrary.active_document.document_id]);
         setCurrentDocument({
-          id: library.active_document.document_id,
-          filename: library.active_document.filename,
-          content: library.active_document.content_preview
+          id: safeLibrary.active_document.document_id,
+          filename: safeLibrary.active_document.filename,
+          content: safeLibrary.active_document.content_preview || ''
         });
-      } else if (!library.active_document && selectedDocuments.length === 1) {
+      } else if (!safeLibrary?.active_document && selectedDocuments.length === 1) {
         // If we have a single selection but no active document, sync with backend
         try {
           await selectDocument(selectedDocuments[0]);
@@ -1132,22 +1571,180 @@ export default function Home() {
       
     } catch (error) {
       console.error('Error loading document library:', error);
+      
+      // ✅ SET DEFAULT STATE JIKA ERROR - Prevent null reference errors
+      setDocumentLibrary({
+        documents: [],
+        total_count: 0,
+        active_document: null
+      });
     } finally {
       setIsLoadingLibrary(false);
     }
   };
 
+  // 💾 LOAD CHAT HISTORY FROM DATABASE
+  const loadChatHistory = async () => {
+    try {
+      console.log('Loading chat sessions from database...');
+      
+      // First, get all sessions
+      const sessionsResponse = await fetch('http://localhost:8000/api/chat/sessions');
+      if (!sessionsResponse.ok) {
+        throw new Error('Failed to load chat sessions');
+      }
+      
+      const sessionsData = await sessionsResponse.json();
+      console.log('Chat sessions loaded:', sessionsData);
+      
+      if (sessionsData.success && sessionsData.sessions && sessionsData.sessions.length > 0) {
+        const chatGroups: ChatGroup[] = [];
+        
+        // Load messages for each session
+        for (const sessionData of sessionsData.sessions) {
+          try {
+            const historyResponse = await fetch(`http://localhost:8000/api/chat/history/${sessionData.id}`);
+            if (historyResponse.ok) {
+              const historyData = await historyResponse.json();
+              
+              if (historyData.success && historyData.chat_history && historyData.chat_history.length > 0) {
+                // Convert database messages to frontend format
+                const messages: Message[] = historyData.chat_history.map((dbMessage: any) => ({
+                  id: dbMessage.id,
+                  sender: dbMessage.message_type === 'user' ? 'user' : 'bot',
+                  content: dbMessage.content,
+                  timestamp: new Date(dbMessage.timestamp)
+                }));
+                
+                // Create chat session
+                const chatSession: ChatSession = {
+                  id: sessionData.id,
+                  title: sessionData.title,
+                  messages: messages,
+                  createdAt: new Date(sessionData.created_at),
+                  timestamp: new Date(sessionData.last_message_time || sessionData.created_at),
+                  isActive: false,
+                  documentContext: {
+                    selectedDocuments: [],
+                    activeDocument: null,
+                    documentSettings: {}
+                  }
+                };
+                
+                // Group by month
+                const sessionDate = new Date(sessionData.created_at);
+                const monthYear = sessionDate.toLocaleDateString('en-US', { 
+                  month: 'long', 
+                  year: 'numeric' 
+                });
+                
+                let group = chatGroups.find(g => g.date === monthYear);
+                if (!group) {
+                  group = { date: monthYear, items: [] };
+                  chatGroups.push(group);
+                }
+                group.items.push(chatSession);
+              }
+            }
+          } catch (error) {
+            console.error(`Error loading session ${sessionData.id}:`, error);
+          }
+        }
+        
+        // Sort groups by date and sessions by timestamp
+        chatGroups.forEach(group => {
+          group.items.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+        });
+        
+        setChatHistory(chatGroups);
+        
+        // Set the most recent session as active if no current chat
+        if (chatGroups.length > 0 && chatGroups[0].items.length > 0 && !selectedChat) {
+          const mostRecentSession = chatGroups[0].items[0];
+          setSelectedChat(mostRecentSession.id);
+          setCurrentChat(mostRecentSession.messages);
+        }
+        
+        console.log('Chat history restored successfully');
+      } else {
+        console.log('No chat sessions found in database');
+      }
+      
+    } catch (error) {
+      console.error('Error loading chat history:', error);
+      // Don't show error to user, just log it
+    }
+  };
+  
+  // 🆕 CREATE NEW SESSION
+  const createNewSession = async (title: string = 'New Chat'): Promise<string | null> => {
+    try {
+      console.log('Creating new session with title:', title);
+      const response = await fetch('http://localhost:8000/api/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      
+      console.log('Create session response status:', response.status);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Create session failed:', errorText);
+        throw new Error(`Failed to create session: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      console.log('Create session response data:', data);
+      
+      if (data.success && data.session_id) {
+        console.log('New session created:', data.session_id);
+        return data.session_id;
+      } else {
+        console.error('Session creation failed:', data);
+        return null;
+      }
+      
+    } catch (error) {
+      console.error('Error creating session:', error);
+      return null;
+    }
+  };
+  
+  // 🎯 GET CURRENT SESSION ID
+  const getCurrentSessionId = (): string | null => {
+    if (!selectedChat) return null;
+    
+    // Find current session in chat history
+    for (const group of chatHistory) {
+      const session = group.items.find(item => item.id === selectedChat);
+      if (session) {
+        return session.id;
+      }
+    }
+    
+    return null;
+  };
+
   const selectDocument = async (documentId: string) => {
+    /**
+     * 🎯 SELECT DOCUMENT FUNCTION - FRONTEND → BACKEND
+     * 
+     * 🔄 KOMUNIKASI:
+     * - POST /api/documents/{id}/select → Set dokumen sebagai active
+     * - Backend akan mengatur dokumen ini sebagai context untuk AI
+     * - Update UI state untuk reflect active document
+     */
     try {
       const response = await fetch(`http://localhost:8000/api/documents/${documentId}/select`, {
-        method: 'POST'
+        method: 'POST'  // 📡 HTTP POST ke backend untuk set active document
       });
       
       if (!response.ok) {
         throw new Error('Failed to select document');
       }
       
-      const result = await response.json();
+      const result = await response.json();  // 📥 Response dari backend
       
       // Update current document
       if (result.active_document) {
@@ -1258,69 +1855,54 @@ export default function Home() {
   };
 
   const clearDocumentSelection = async () => {
-    try {
-      const response = await fetch('http://localhost:8000/api/documents/clear-selection', {
-        method: 'POST'
-      });
-      
-      if (!response.ok) {
-        throw new Error('Failed to clear selection');
-      }
-      
-      // Clear both selected documents and current document
-      setSelectedDocuments([]);
-      setCurrentDocument(null);
-      setDocumentLibrary(prev => ({
-        ...prev,
-        active_document: null
+    // ✅ NEW: Clear document context for current chat session only
+    setSelectedDocuments([]);
+    setCurrentDocument(null);
+    
+    // Add system message to chat about clearing document context
+    const systemMessage: Message = {
+      id: Math.random().toString(36).substring(7),
+      content: '🚫 **Document context cleared for this chat** - Now in general chat mode',
+      sender: 'system',
+      timestamp: new Date(),
+      messageType: 'system'
+    };
+    
+    // Add to current chat
+    const updatedChat = [...currentChat, systemMessage];
+    setCurrentChat(updatedChat);
+    
+    // Update chat history if we have an active chat
+    if (selectedChat) {
+      const updatedHistory = chatHistory.map(group => ({
+        ...group,
+        items: group.items.map(chat => {
+          if (chat.id === selectedChat) {
+            return {
+              ...chat,
+              messages: updatedChat,
+              // ✅ NEW: Clear document context for this session
+              documentContext: {
+                activeDocument: null,
+                selectedDocuments: [],
+                documentSettings: {}
+              }
+            };
+          }
+          return chat;
+        })
       }));
-      
-      // Add system message to chat about clearing document context
-      const systemMessage: Message = {
-        id: Math.random().toString(36).substring(7),
-        content: '🚫 **Document context cleared** - Now in general chat mode',
-        sender: 'system',
-        timestamp: new Date(),
-        messageType: 'system'
-      };
-      
-      // Add to current chat
-      const updatedChat = [...currentChat, systemMessage];
-      setCurrentChat(updatedChat);
-      
-      // Update chat history if we have an active chat
-      if (selectedChat) {
-        const updatedHistory = chatHistory.map(group => ({
-          ...group,
-          items: group.items.map(chat => {
-            if (chat.id === selectedChat) {
-              return {
-                ...chat,
-                messages: updatedChat
-              };
-            }
-            return chat;
-          })
-        }));
-        setChatHistory(updatedHistory);
-      }
-      
-      // CRITICAL: Clear currentDocument state to stop using old document context
-      setCurrentDocument(null);
-      console.log('🧹 currentDocument cleared - now in general chat mode');
-      
-      await loadDocumentLibrary();
-      
-    } catch (error) {
-      console.error('Error clearing selection:', error);
+      setChatHistory(updatedHistory);
     }
+    
+    console.log('🧹 Document context cleared for current chat session');
   };
 
-  // � Filter documents based on search query
-  const filteredDocuments = documentLibrary.documents.filter(doc =>
+  // 📊 Filter documents based on search query
+  const filteredDocuments = documentLibrary?.documents?.filter(doc =>
     doc.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
     doc.content_preview.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  ) || [];
 
   // �📊 File size formatting for user-friendly display
   const formatFileSize = (bytes: number): string => {
@@ -1350,6 +1932,7 @@ export default function Home() {
   // Load document library on component mount
   useEffect(() => {
     loadDocumentLibrary();
+    loadChatHistory(); // Load chat history from database
   }, []);
 
   // Debug effect to track currentChat changes
@@ -1368,6 +1951,13 @@ export default function Home() {
   useEffect(() => {
     console.log('isStreaming changed:', isStreaming);
   }, [isStreaming]);
+
+  // ✅ NEW: Auto-save document context when documents change
+  useEffect(() => {
+    if (selectedChat && (currentDocument || selectedDocuments.length > 0)) {
+      saveDocumentContextToCurrentChat();
+    }
+  }, [currentDocument, selectedDocuments, selectedChat]);
 
   // Close chat menu when clicking outside
   useEffect(() => {
@@ -1423,19 +2013,23 @@ export default function Home() {
           )}
         {/* 
           ═══════════════════════════════════════════════════════════════
-          🎯 NAVIGATION BUTTONS - Action Controls
+          🎯 NAVIGATION BUTTONS - ACTION CONTROLS
           ═══════════════════════════════════════════════════════════════
-          Design Pattern: Icon-based navigation with hover states
-          - Consistent button sizing and padding
-          - Smooth hover transitions (200ms)
-          - Active states with color changes
-          - Responsive visibility based on sidebar state
+          
+          🎨 FRONTEND UI COMPONENTS:
+          - Sidebar toggle untuk responsive design
+          - Icon buttons dengan consistent hover states
+          - Conditional rendering berdasarkan sidebar state
+          
+          🔄 TIDAK ADA KOMUNIKASI LANGSUNG DENGAN BACKEND:
+          - Ini adalah pure UI state management
+          - Hanya mengatur tampilan sidebar (collapsed/expanded)
           ═══════════════════════════════════════════════════════════════
         */}
         <div className="flex items-center gap-2">
             <button 
               className="icon-button hover:bg-gray-100 transition-all duration-200"
-              onClick={toggleSidebar}
+              onClick={toggleSidebar}  // 🎛️ UI state function - tidak komunikasi backend
               title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             >
               <Bars3Icon className="w-5 h-5" />
@@ -1452,14 +2046,17 @@ export default function Home() {
 
         {/* 
           ═══════════════════════════════════════════════════════════════
-          🆕 PRIMARY ACTION BUTTON - New Chat
+          🆕 PRIMARY ACTION BUTTON - NEW CHAT
           ═══════════════════════════════════════════════════════════════
-          Design Highlights:
-          - Gradient background (blue-600 to blue-500)
-          - Hover effect with darker gradient
-          - Shadow for depth perception
-          - Responsive layout with icon + text
-          - Smooth transitions for professional feel
+          
+          🎨 FRONTEND UI COMPONENT:
+          - Create new chat session button
+          - Gradient design untuk visual appeal
+          - Responsive behavior (icon only saat collapsed)
+          
+          🔄 TIDAK ADA KOMUNIKASI DENGAN BACKEND:
+          - Ini adalah local state management untuk membuat chat session baru
+          - Hanya reset currentChat state ke array kosong
           ═══════════════════════════════════════════════════════════════
         */}
         <button 
@@ -1527,7 +2124,23 @@ export default function Home() {
                             onClick={(e) => e.stopPropagation()}
                           />
                         ) : (
-                          <span className="truncate flex-1 text-sm">{chat.title}</span>
+                          <div className="flex-1 min-w-0">
+                            <span className="truncate flex-1 text-sm">{chat.title}</span>
+                            {/* ✅ NEW: Document context indicator */}
+                            {chat.documentContext && (chat.documentContext.activeDocument || chat.documentContext.selectedDocuments.length > 0) && (
+                              <div className="flex items-center gap-1 mt-0.5">
+                                {chat.documentContext.selectedDocuments.length > 1 ? (
+                                  <span className="text-xs text-purple-600 font-medium">
+                                    📊 {chat.documentContext.selectedDocuments.length} docs
+                                  </span>
+                                ) : chat.documentContext.activeDocument ? (
+                                  <span className="text-xs text-blue-600 font-medium truncate max-w-32">
+                                    📄 {chat.documentContext.activeDocument?.filename || 'Document'}
+                                  </span>
+                                ) : null}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
                       
@@ -1588,8 +2201,8 @@ export default function Home() {
           <div className="mt-4 pt-4 border-t border-gray-200">
             <button className="chat-item flex items-center gap-2 hover:bg-gray-50 group transition-colors">
               <CommandLineIcon className="w-5 h-5 text-gray-400 group-hover:text-gray-600" />
-              <span>Get App</span>
-              <span className="ml-auto text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">NEW</span>
+              <span>HOLAAA</span>
+              <span className="ml-auto text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">OYY</span>
             </button>
           </div>
         )}
@@ -1597,13 +2210,18 @@ export default function Home() {
 
       {/* 
         ═══════════════════════════════════════════════════════════════
-        💬 MAIN CHAT AREA DESIGN SECTION
+        💬 MAIN CHAT AREA - FRONTEND DISPLAY SECTION
         ═══════════════════════════════════════════════════════════════
-        Layout Structure:
-        - Clean white background for readability
-        - Flexible container that grows to fill available space
-        - Responsive max-width (3xl) for optimal reading width
-        - Smooth scrolling with custom scrollbar
+        
+        🎨 FRONTEND UI COMPONENTS:
+        - Container untuk menampilkan messages dari backend
+        - Responsive layout dengan max-width optimal
+        - Chat message rendering dengan data dari API
+        
+        🔄 KOMUNIKASI DENGAN BACKEND:
+        - Area ini menampilkan data messages yang diterima dari POST /api/chat
+        - Setiap message berisi response dari AI model melalui backend
+        - Real-time update saat menerima streaming response
         ═══════════════════════════════════════════════════════════════
       */}
       <div className="chat-container bg-transparent">
@@ -1878,26 +2496,33 @@ export default function Home() {
 
         {/* 
           ═══════════════════════════════════════════════════════════════
-          ✉️ MESSAGE INPUT SECTION - Chat Interface
+          ✉️ MESSAGE INPUT SECTION - FRONTEND INPUT INTERFACE
           ═══════════════════════════════════════════════════════════════
-          Design System:
-          - Gradient background footer for visual separation
-          - Floating input design with shadow effects
-          - Auto-resizing textarea with smooth transitions
-          - Icon buttons with hover states
-          - File upload integration with visual feedback
-          - Model information banner for transparency
-          - Loading states with animations
+          
+          🎨 FRONTEND UI COMPONENTS:
+          - Textarea untuk user input
+          - File upload button untuk dokumen
+          - Document selection button
+          - Send message button
+          
+          🔄 KOMUNIKASI DENGAN BACKEND:
+          - handleSendMessage() → POST /api/chat
+          - handleFileUpload() → POST /api/upload_document
+          - Document selection → POST /api/documents/{id}/select
+          
+          📊 DATA FLOW:
+          - User input → Validation → Send to backend → Display response
           ═══════════════════════════════════════════════════════════════
         */}
         <div className="p-4">
           <div className="max-w-3xl mx-auto">
             {/* 
               ═══════════════════════════════════════════════════════════════
-              🤖 MODEL INFO BANNER - AI Transparency
+              🤖 MODEL INFO BANNER - AI TRANSPARENCY
               ═══════════════════════════════════════════════════════════════
               Information Design:
-              - Light blue background for tech information
+              - Menampilkan model AI yang sedang digunakan (dari backend config)
+              - Static info tidak memerlukan komunikasi dengan backend
               - Icon + text layout for clarity
               - Centered text with proper hierarchy
               - Model specifications clearly displayed
@@ -1931,12 +2556,13 @@ export default function Home() {
             )}
             
             <div className="message-input bg-transparent shadow-sm hover:shadow transition-shadow duration-200">
+              {/* 📁 FILE UPLOAD BUTTON - FRONTEND → BACKEND COMMUNICATION */}
               <div className="relative">
                 <input
                   type="file"
                   id="file-upload"
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  onChange={handleFileUpload}
+                  onChange={handleFileUpload}  // 📤 Trigger upload ke backend
                   accept=".pdf,.docx"
                   disabled={isUploading || isStreaming}
                 />
@@ -1944,6 +2570,8 @@ export default function Home() {
                   <PaperClipIcon className={`w-5 h-5 ${currentDocument ? 'text-blue-500' : ''}`} />
                 </button>
               </div>
+              
+              {/* 💬 TEXT INPUT AREA - USER MESSAGE INPUT */}
               <div className="flex-1">
                 <textarea
                   ref={textareaRef}
@@ -1971,8 +2599,10 @@ export default function Home() {
                   }}
                 />
               </div>
+              
+              {/* 🎛️ ACTION BUTTONS - KONTROL KOMUNIKASI */}
               <div className="flex gap-2 self-end mb-1">
-                {/* Single Document Selection Button - Auto-detects single/multi mode */}
+                {/* 📚 DOCUMENT SELECTION BUTTON - FRONTEND → BACKEND */}
                 <button 
                   className={`icon-button transition-colors ${
                     selectedDocuments.length > 1
@@ -1981,7 +2611,7 @@ export default function Home() {
                         ? 'bg-blue-100 text-blue-600 hover:bg-blue-200'
                         : 'hover:bg-gray-100 text-gray-600'
                   } ${isStreaming ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  onClick={() => setShowDocumentLibrary(true)}
+                  onClick={() => setShowDocumentLibrary(true)}  // 🎨 Show UI popup (tidak langsung ke backend)
                   disabled={isStreaming}
                   title={
                     selectedDocuments.length > 1
@@ -1999,9 +2629,13 @@ export default function Home() {
                     <DocumentTextIcon className="w-5 h-5" />
                   )}
                 </button>
+                
+                {/* 🌐 WEB SEARCH BUTTON - FUTURE FEATURE */}
                 <button className="icon-button hover:bg-pink-200 transition-colors">
                   <GlobeAltIcon className="w-5 h-5" />
                 </button>
+                
+                {/* 📤 SEND MESSAGE BUTTON - MAIN BACKEND COMMUNICATION */}
                 <button 
                   className={`icon-button transition-colors ${
                     isStreaming 
@@ -2010,7 +2644,7 @@ export default function Home() {
                         ? 'text-purple-500 hover:bg-purple-50'
                         : 'text-blue-500 hover:bg-blue-50'
                   }`}
-                  onClick={handleSendMessage}
+                  onClick={handleSendMessage}  // 🚀 MAIN COMMUNICATION: Frontend → Backend → AI
                   disabled={isStreaming}
                 >
                   {isStreaming ? (
@@ -2026,12 +2660,22 @@ export default function Home() {
 
         {/* 
           ═══════════════════════════════════════════════════════════════
-          📚 MINI DOCUMENT LIBRARY POPUP - Ultra Simple
+          📚 DOCUMENT LIBRARY POPUP - FRONTEND ↔ BACKEND INTEGRATION
           ═══════════════════════════════════════════════════════════════
-          Design Philosophy: Minimalist dropdown-style popup
-          - Small dropdown positioned above button
-          - Very compact design with essential info only
-          - Quick search and select functionality
+          
+          🎨 FRONTEND UI COMPONENT:
+          - Modal popup untuk document selection
+          - Real-time search dan filtering
+          - Multi-document selection support
+          
+          🔄 KOMUNIKASI DENGAN BACKEND:
+          - loadDocumentLibrary() → GET /api/documents
+          - toggleDocumentSelection() → POST /api/documents/{id}/select
+          - deleteDocument() → DELETE /api/documents/{id}
+          - clearDocumentSelection() → POST /api/documents/clear-selection
+          
+          📊 DATA FLOW:
+          - Load documents dari backend → Display in UI → User interaction → Update backend
           ═══════════════════════════════════════════════════════════════
         */}
         {showDocumentLibrary && (
@@ -2043,7 +2687,7 @@ export default function Home() {
               className="absolute bottom-20 right-6 bg-white rounded-xl shadow-xl border border-gray-200 w-96 max-h-[500px] overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Enhanced Header with Smart Title */}
+              {/* 📋 DOCUMENT LIBRARY HEADER - DISPLAY DATA DARI BACKEND */}
               <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-gray-50 to-blue-50">
                 <div className="flex items-center gap-3">
                   {selectedDocuments.length > 1 ? (

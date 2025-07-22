@@ -1,3 +1,38 @@
+"""
+🚀 AI-LLAMA3-8B BACKEND SERVER - FASTAPI APPLICATION
+
+📋 STRUKTUR KOMUNIKASI SISTEM:
+
+🌐 FRONTEND ↔ BACKEND (FastAPI):
+├── React App (localhost:3000) → CORS → FastAPI (localhost:8000)
+├── POST /api/chat → Main chat communication dengan AI
+├── POST /api/upload_document → File upload dan processing
+├── GET /api/documents → Document library management
+└── Various document management endpoints
+
+🤖 BACKEND ↔ AI MODEL (Ollama):
+├── FastAPI → HTTP Client → Ollama Server (localhost:11434)
+├── AIModelOptimizer → Generate optimized payload untuk AI
+├── StreamingResponseHandler → Process streaming response dari AI
+└── Payload → /api/generate → AI Response
+
+🔄 FLOW KOMUNIKASI UTAMA:
+1️⃣ User input dari React frontend
+2️⃣ FastAPI menerima di /api/chat endpoint  
+3️⃣ Processing prompt + context dengan AIModelOptimizer
+4️⃣ HTTP request ke Ollama AI model
+5️⃣ Streaming response processing dari AI
+6️⃣ Format response untuk frontend
+7️⃣ JSON response kembali ke React
+
+🎯 KOMPONEN UTAMA:
+- FastAPI app: Web server dan routing
+- AIModelOptimizer: Bridge utama ke AI model  
+- StreamingResponseHandler: Real-time AI communication
+- DocumentLibrary: File management system
+- Response formatters: Frontend-ready data processing
+"""
+
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -12,6 +47,8 @@ import shutil
 import uuid
 import time
 import hashlib
+import traceback  # For detailed error logging
+import json
 import docx2txt  # For basic DOCX processing
 import PyPDF4   # For PDF processing
 import base64
@@ -22,6 +59,7 @@ from PIL import Image
 import fitz  # PyMuPDF for better PDF processing
 import magic  # For file type detection
 import json
+import traceback  # For detailed error logging
 from pathlib import Path
 
 # Import enhanced table processing utilities
@@ -29,16 +67,27 @@ from utils.table_parser import TableParser
 from utils.response_formatter import ResponseFormatter
 from utils.markdown_processor import MarkdownProcessor
 
+# Import database components
+from database.adapter import DocumentLibrary, DocumentMetadata
+from database.service import db_service
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 🚀 FASTAPI MAIN APPLICATION INSTANCE
+# Ini adalah instance utama FastAPI yang menjalankan seluruh backend server
 app = FastAPI()
 
-# Configure CORS
+# 🌐 CORS MIDDLEWARE - KOMUNIKASI DENGAN FRONTEND
+# Middleware ini mengatur komunikasi antara backend (port 11434/8000) dengan frontend React (port 3000)
+# allow_origins: Mengizinkan frontend React di localhost:3000 untuk mengakses API
+# allow_credentials: Mengizinkan cookies dan authentication headers
+# allow_methods: Mengizinkan semua HTTP methods (GET, POST, PUT, DELETE, dll)
+# allow_headers: Mengizinkan semua headers dari frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000"],  # 🎯 FRONTEND URL: React app berjalan di port 3000
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -48,144 +97,31 @@ app.add_middleware(
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# �️ Initialize Database-backed Document Library
+document_library = DocumentLibrary()
+
+# �📡 PYDANTIC MODELS - STRUKTUR DATA KOMUNIKASI DENGAN FRONTEND
+# Model ini mendefinisikan format data yang diterima dari frontend React
+
 class ChatRequest(BaseModel):
-    message: str
+    """
+    🔄 MODEL REQUEST DARI FRONTEND
+    Struktur data yang dikirim frontend saat user mengirim chat message
+    """
+    message: str  # Pesan dari user
+    session_id: Optional[str] = None  # ID sesi chat untuk session management
     context: Optional[str] = None  # Untuk menyimpan konteks dari dokumen
-    model_type: Optional[str] = "llama3:latest"  # Model selection
+    model_type: Optional[str] = "llama3:latest"  # ✨ UBAH DISINI: Default model selection - ganti ke model lain jika diperlukan
     conversation_history: Optional[List[Dict[str, str]]] = []  # Chat history untuk konteks
 
 class DocumentResponse(BaseModel):
+    """
+    📤 MODEL RESPONSE KE FRONTEND
+    Struktur data yang dikirim ke frontend setelah processing dokumen
+    """
     document_id: str
     content: str
     filename: str
-
-# Document Library System
-import json
-from pathlib import Path
-
-# Document Metadata Storage
-METADATA_FILE = os.path.join(UPLOAD_FOLDER, "documents_metadata.json")
-
-class DocumentMetadata(BaseModel):
-    document_id: str
-    filename: str
-    original_filename: str
-    upload_date: str
-    file_size: int
-    file_type: str  # .pdf or .docx
-    content_preview: str  # First 200 chars
-    analysis_summary: Dict[str, Any]
-    is_active: bool = False
-
-class DocumentLibrary:
-    """Manage document library with persistent storage"""
-    
-    def __init__(self):
-        self.metadata_file = METADATA_FILE
-        self.ensure_metadata_file()
-    
-    def ensure_metadata_file(self):
-        """Ensure metadata file exists"""
-        if not os.path.exists(self.metadata_file):
-            self.save_metadata([])
-    
-    def load_metadata(self) -> List[DocumentMetadata]:
-        """Load all document metadata"""
-        try:
-            with open(self.metadata_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return [DocumentMetadata(**item) for item in data]
-        except Exception as e:
-            logger.error(f"Error loading metadata: {e}")
-            return []
-    
-    def save_metadata(self, documents: List[DocumentMetadata]):
-        """Save document metadata"""
-        try:
-            data = [doc.dict() for doc in documents]
-            with open(self.metadata_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving metadata: {e}")
-    
-    def add_document(self, metadata: DocumentMetadata):
-        """Add new document to library"""
-        documents = self.load_metadata()
-        
-        # Set all other documents as inactive
-        for doc in documents:
-            doc.is_active = False
-        
-        # Add new document as active
-        metadata.is_active = True
-        documents.append(metadata)
-        
-        self.save_metadata(documents)
-        logger.info(f"Added document to library: {metadata.filename}")
-    
-    def get_all_documents(self) -> List[DocumentMetadata]:
-        """Get all documents in library"""
-        return self.load_metadata()
-    
-    def get_document(self, document_id: str) -> Optional[DocumentMetadata]:
-        """Get specific document by ID"""
-        documents = self.load_metadata()
-        for doc in documents:
-            if doc.document_id == document_id:
-                return doc
-        return None
-    
-    def set_active_document(self, document_id: str) -> bool:
-        """Set document as active"""
-        documents = self.load_metadata()
-        found = False
-        
-        for doc in documents:
-            if doc.document_id == document_id:
-                doc.is_active = True
-                found = True
-            else:
-                doc.is_active = False
-        
-        if found:
-            self.save_metadata(documents)
-            logger.info(f"Set active document: {document_id}")
-        
-        return found
-    
-    def get_active_document(self) -> Optional[DocumentMetadata]:
-        """Get currently active document"""
-        documents = self.load_metadata()
-        for doc in documents:
-            if doc.is_active:
-                return doc
-        return None
-    
-    def delete_document(self, document_id: str) -> bool:
-        """Delete document from library and filesystem"""
-        documents = self.load_metadata()
-        doc_to_delete = None
-        
-        # Find document to delete
-        for i, doc in enumerate(documents):
-            if doc.document_id == document_id:
-                doc_to_delete = doc
-                documents.pop(i)
-                break
-        
-        if doc_to_delete:
-            # Delete physical file
-            file_path = os.path.join(UPLOAD_FOLDER, doc_to_delete.filename)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f"Deleted file: {file_path}")
-            
-            # Save updated metadata
-            self.save_metadata(documents)
-            logger.info(f"Deleted document from library: {doc_to_delete.original_filename}")
-            return True
-        
-        return False
 
 # Simplified Document Processing for Library System
 class SimpleDocumentProcessor:
@@ -247,13 +183,12 @@ class SimplePromptEngineer:
                 conversation_context += f"{msg.get('sender', 'User')}: {msg.get('content', '')[:100]}...\n"
         
         # SPEED-OPTIMIZED prompt with clear instructions for fast response
-        prompt = f"""INSTRUKSI CEPAT - JAWAB LANGSUNG:
-Berikan jawaban singkat, padat, dan informatif dengan format markdown:
+        prompt = f"""INSTRUKSI FORMAT JAWABAN:
+Berikan jawaban informatif dengan promt yang di minta oleh user dan format markdown:
 - Gunakan ## untuk judul utama
 - **Bold** untuk poin penting (minimal 3-5 bold)
 - - untuk daftar (gunakan banyak list)
-- Jawaban maksimal 500-800 kata
-- LANGSUNG ke inti masalah
+- jawab dengan kompleks dan komperhesif
 - JANGAN menulis pembukaan panjang
 
 DOKUMEN:
@@ -288,8 +223,7 @@ Jawab dengan format markdown yang rapi:
 - ## untuk judul
 - **Bold** untuk poin penting
 - - untuk list
-- Maksimal 400-600 kata
-- Langsung ke inti
+- jawab dengan kompleks
 
 {conversation_context}
 
@@ -429,9 +363,16 @@ class ResponseMonitor:
         
         return cleaned_text
 
-# AI Model Configuration System
+# 🤖 AI MODEL CONFIGURATION SYSTEM
+# Kelas-kelas ini menangani konfigurasi dan komunikasi dengan AI model
+
 @dataclass
 class ModelConfig:
+    """
+    ⚙️ KONFIGURASI MODEL AI
+    - Menyimpan semua parameter untuk komunikasi dengan Ollama
+    - Digunakan oleh AIModelOptimizer untuk generate payload ke AI
+    """
     model_name: str
     temperature: float
     top_p: float
@@ -443,92 +384,218 @@ class ModelConfig:
     stop_tokens: list
 
 class AIModelOptimizer:
-    """Ultra-fast AI Model optimizer for gaming laptop - SPEED OPTIMIZED"""
+    """
+    🤖 BRIDGE UTAMA ANTARA BACKEND DAN AI MODEL
+    
+    🔄 PERAN DALAM KOMUNIKASI:
+    1️⃣ Menerima prompt dari chat endpoint
+    2️⃣ Generate payload yang dioptimasi untuk Ollama API
+    3️⃣ Mengatur parameter AI model (temperature, tokens, dll)
+    4️⃣ Mengirim request ke Ollama server
+    
+    📊 TIDAK KOMUNIKASI LANGSUNG DENGAN FRONTEND:
+    - Class ini fokus pada komunikasi dengan AI model
+    - Frontend berkomunikasi melalui chat endpoint yang menggunakan class ini
+    
+    Ultra-fast AI Model optimizer for gaming laptop - SPEED OPTIMIZED
+    
+    📋 CARA DOWNLOAD DAN SETUP MODEL AI:
+    
+    1️⃣ INSTALL OLLAMA TERLEBIH DAHULU:
+       - Download dari: https://ollama.ai/download
+       - Windows: Download installer .exe dan jalankan
+       - Linux/Mac: curl -fsSL https://ollama.ai/install.sh | sh
+    
+    2️⃣ DOWNLOAD MODEL AI (pilih salah satu):
+       🎯 LLAMA3 (Recommended - Good balance):
+       ollama pull llama3:8b        # 4.7GB - Default yang digunakan
+       ollama pull llama3:7b        # 3.8GB - Lebih kecil, sedikit kurang akurat
+       ollama pull llama3:13b       # 7.3GB - Lebih akurat, butuh RAM lebih besar
+       
+       🔬 MISTRAL (Good for coding):
+       ollama pull mistral:7b       # 4.1GB - Bagus untuk programming
+       ollama pull mistral:instruct # 4.1GB - Better for instructions
+       
+       🧠 GEMMA (Google's model):
+       ollama pull gemma:7b         # 4.8GB - Google's lightweight model
+       ollama pull gemma:2b         # 1.7GB - Very small, good for testing
+       
+       💻 CODELLAMA (Best for programming):
+       ollama pull codellama:7b     # 3.8GB - Specialized for code
+       ollama pull codellama:13b    # 7.3GB - Better code understanding
+       
+       🗣️ NEURAL-CHAT (Good conversation):
+       ollama pull neural-chat:7b   # 4.1GB - Optimized for chatting
+       
+       🦙 VICUNA (ChatGPT-like):
+       ollama pull vicuna:7b        # 3.8GB - ChatGPT alternative
+       ollama pull vicuna:13b       # 7.3GB - Better performance
+    
+    3️⃣ CEK MODEL YANG TERINSTALL:
+       ollama list                  # Lihat semua model yang sudah di-download
+    
+    4️⃣ TEST MODEL:
+       ollama run llama3:8b         # Test model langsung di terminal
+       
+    5️⃣ START OLLAMA SERVER:
+       ollama serve                 # Start server di http://localhost:11434
+       # Atau biarkan auto-start setelah install
+    
+    ⚙️ SYSTEM REQUIREMENTS:
+       - RAM: Minimum 8GB (Recommended 16GB+)
+       - Storage: 5-10GB per model
+       - GPU: Optional (NVIDIA/AMD supported for speed boost)
+       - CPU: Any modern CPU (4+ cores recommended)
+    
+    🎛️ PARAMETER TUNING GUIDE:
+       - temperature: 0.1-1.0 (Lower = more focused, Higher = more creative)
+       - top_k: 10-100 (Lower = more focused vocabulary)
+       - top_p: 0.1-1.0 (Lower = more deterministic)
+       - num_ctx: 2048-32768 (Context window size)
+       - num_predict: 100-4000 (Max output tokens)
+    """
     
     def __init__(self):
         # BALANCED configuration for quality + speed optimization
+        # 🔧 UBAH DISINI: Konfigurasi utama model AI - ganti model_name untuk menggunakan model berbeda
+        
+        # 📝 LANGKAH MENGGANTI MODEL:
+        # 1. Download model: ollama pull <nama_model>
+        # 2. Ganti model_name di bawah
+        # 3. Sesuaikan parameter jika perlu
+        # 4. Restart aplikasi
+        
         self.config = ModelConfig(
-            model_name="llama3:8b",
-            temperature=0.6,        # FURTHER REDUCED: Even faster, still good quality  
-            top_p=0.8,             # REDUCED: More focused for speed
-            top_k=25,              # FURTHER REDUCED: Lower for faster generation
-            num_ctx=4096,          # Keep current - good balance
-            num_predict=2500,      # REDUCED: Target ~1500-2000 words for speed (was 3000)
-            repeat_penalty=1.2,    # Slightly higher to prevent loops and reduce iteration
-            num_thread=-1,         # Use all CPU threads
-            stop_tokens=["Human:", "Assistant:", "PERTANYAAN:", "User:", "\n\nHuman", "\n\nUser"]
+            # 🎯 GANTI MODEL DISINI: Pastikan model sudah di-download dengan 'ollama pull <model_name>'
+            model_name="llama3:8b",         # ✅ Current: LLaMA3 8B (4.7GB)
+            # model_name="mistral:7b",      # 🔄 Alternative: Mistral 7B (4.1GB) - Good for coding
+            # model_name="gemma:7b",        # 🔄 Alternative: Gemma 7B (4.8GB) - Google's model  
+            # model_name="codellama:7b",    # 🔄 Alternative: CodeLLaMA 7B (3.8GB) - Best for programming
+            # model_name="neural-chat:7b",  # 🔄 Alternative: Neural Chat 7B (4.1GB) - Good conversation
+            # model_name="vicuna:7b",       # 🔄 Alternative: Vicuna 7B (3.8GB) - ChatGPT-like
+            
+            # 🎛️ OPTIMIZED PARAMETERS FOR MULTI-DOCUMENT SPEED:
+            temperature=0.6,        # � LOWERED: Faster inference (was 0.6)
+            top_p=0.8,             # � LOWERED: More deterministic, faster (was 0.8)
+            top_k=25,              # � LOWERED: More focused, faster (was 25)
+            num_ctx=4096,          # � REDUCED: Smaller context for speed (was 4096)
+            num_predict=2500,      # � REDUCED: Shorter responses for speed (was 2500)
+            repeat_penalty=1.1,    # � LOWERED: Less processing overhead (was 1.2)
+            num_thread=-1,         # 🔧 CPU threads: -1=auto, or specific number (4, 8, 16)
+            
+            # 🛑 STOP TOKENS - Sesuaikan per model untuk menghentikan respons yang tidak diinginkan
+            stop_tokens=[
+                "Human:", "Assistant:", "PERTANYAAN:", "User:", 
+                "\n\nHuman", "\n\nUser", "\n\nAssistant:",
+                # � Tambahkan stop tokens spesifik model jika perlu:
+                # "### Human:", "### Assistant:",  # Untuk beberapa model chat
+                # "<|im_end|>", "<|im_start|>",   # Untuk model dengan special tokens
+                # "[INST]", "[/INST]",            # Untuk Mistral/Mixtral
+            ]
         )
     
     def get_config(self) -> ModelConfig:
         return self.config
     
     def get_optimized_payload(self, prompt: str, use_streaming: bool = True) -> Dict[str, Any]:
+        """
+        🚀 GENERATE OPTIMIZED PAYLOAD FOR OLLAMA API
+        
+        📋 PARAMETER EXPLANATION:
+        - model: Nama model yang akan digunakan (harus sudah di-download)
+        - prompt: Input text untuk AI
+        - stream: True=streaming response, False=wait for complete response
+        - options: Advanced model parameters untuk fine-tuning
+        
+        ⚙️ HARDWARE OPTIMIZATION NOTES:
+        - num_gpu: -1=auto-detect, 0=CPU only, >0=specific GPU layers
+        - low_vram: True jika VRAM <8GB, False untuk VRAM tinggi
+        - f16_kv: Half precision untuk speed (beberapa model tidak support)
+        - num_batch: Batch size - lebih kecil = less VRAM, lebih lambat
+        - mlock: Lock model in RAM - True=faster tapi butuh RAM besar
+        """
         config = self.get_config()
         
         return {
-            "model": config.model_name,
+            "model": config.model_name,  # 🎯 MENGGUNAKAN MODEL DARI CONFIG: Model yang dipilih akan otomatis terambil dari ModelConfig
             "prompt": prompt,
             "stream": use_streaming,
             "options": {
-                "temperature": config.temperature,
-                "top_p": config.top_p,
-                "top_k": config.top_k,
-                "num_ctx": config.num_ctx,
-                "num_predict": config.num_predict,
+                # 🎯 CORE GENERATION PARAMETERS - Yang paling penting untuk disesuaikan
+                "temperature": config.temperature,     # 🔧 SESUAIKAN: Temperature mungkin perlu disesuaikan per model (0.1-1.0)
+                "top_p": config.top_p,                # 🔧 SESUAIKAN: Top-p sampling, beberapa model lebih baik dengan nilai berbeda
+                "top_k": config.top_k,                # 🔧 SESUAIKAN: Top-k sampling, model yang lebih besar mungkin butuh nilai lebih tinggi
+                "num_ctx": config.num_ctx,            # 🔧 SESUAIKAN: Context window, model berbeda punya limit berbeda (2048, 4096, 8192, 32768)
+                "num_predict": config.num_predict,    # 🔧 SESUAIKAN: Max output tokens, sesuaikan dengan kebutuhan dan kemampuan model
                 "num_thread": config.num_thread,
-                "repeat_penalty": config.repeat_penalty,
+                "repeat_penalty": config.repeat_penalty,  # 🔧 SESUAIKAN: Penalty untuk repetisi, beberapa model butuh nilai berbeda
                 "repeat_last_n": 30,   # REDUCED: Smaller repeat window for speed
-                "stop": config.stop_tokens,
+                "stop": config.stop_tokens,           # 🔧 SESUAIKAN: Stop tokens spesifik per model
                 
-                # SPEED-OPTIMIZED configuration for sub-60s responses
-                "num_gpu": -1,         # Auto-detect GPU 
-                "low_vram": False,     # Keep disabled for 22GB RAM
-                "f16_kv": True,        # ENABLED: Use half precision for speed
-                "num_batch": 512,      # REDUCED: Smaller batch for faster processing
-                "numa": False,         # Keep disabled
-                "mlock": True,         # Lock model in memory
-                "use_mmap": True,      # Enable memory mapping
-                "seed": -1,            # Random seed
+                # 🖥️ HARDWARE OPTIMIZATION - Sesuaikan dengan spesifikasi komputer Anda
+                # 🔧 SESUAIKAN PER MODEL: Parameter ini mungkin perlu disesuaikan tergantung model yang digunakan
+                "num_gpu": -1,         # 🔧 GPU layers: -1=auto, 0=CPU only, 10-50=partial GPU (sesuaikan dengan VRAM)
+                "low_vram": False,     # 🔧 VRAM optimization: True jika VRAM <8GB, False untuk 16GB+
+                "f16_kv": True,        # 🔧 Half precision: True=faster tapi beberapa model tidak support, False=safer
+                "num_batch": 512,      # 🔧 Batch size: 128=low VRAM, 512=balanced, 1024+=high VRAM
+                "numa": False,         # 🔧 NUMA: False=default, True untuk server multi-socket
+                "mlock": True,         # 🔧 Memory lock: True=lock model in RAM (butuh RAM besar), False=allow swap
+                "use_mmap": True,      # 🔧 Memory mapping: True=recommended untuk most cases
+                "seed": -1,            # 🔧 Random seed: -1=random, specific number=reproducible results
                 
-                # AGGRESSIVE speed optimizations
-                "penalize_newline": False,
-                "presence_penalty": 0.0,
-                "frequency_penalty": 0.0,
-                "tfs_z": 1.0,
-                "typical_p": 1.0,
-                "min_p": 0.0,
+                # 🎛️ ADVANCED FINE-TUNING - Parameter lanjutan (jarang perlu diubah)
+                "penalize_newline": False,  # Penalty untuk newline characters
+                "presence_penalty": 0.0,    # Penalty untuk token yang sudah muncul
+                "frequency_penalty": 0.0,   # Penalty berdasarkan frekuensi token
+                "tfs_z": 1.0,              # Tail Free Sampling
+                "typical_p": 1.0,          # Typical P sampling
+                "min_p": 0.0,              # Minimum P threshold
                 
-                # Additional speed tweaks
-                "rope_freq_base": 10000,
-                "rope_freq_scale": 1.0,
-                "num_keep": 24,        # Keep first 24 tokens for consistency
-                "num_gqa": -1
+                # 🔗 MODEL-SPECIFIC PARAMETERS - Untuk model transformer tertentu
+                "rope_freq_base": 10000,    # RoPE frequency base (untuk model with rotary embeddings)
+                "rope_freq_scale": 1.0,     # RoPE frequency scaling
+                "num_keep": 24,             # Keep first N tokens for consistency
+                "num_gqa": -1               # Grouped Query Attention (-1=auto)
             }
         }
 
-# Initialize optimizer
-ai_optimizer = AIModelOptimizer()
+# 🏗️ INISIALISASI KOMPONEN SISTEM
+# Bagian ini menginisialisasi semua komponen yang akan digunakan
 
-# Initialize document library
-document_library = DocumentLibrary()
+# 🤖 KOMPONEN KOMUNIKASI DENGAN AI MODEL
+ai_optimizer = AIModelOptimizer()  # Bridge utama ke Ollama AI
 
-# Initialize simple processors
-doc_processor = SimpleDocumentProcessor()
-prompt_engineer = SimplePromptEngineer()
+# ⚡ KOMPONEN PROCESSING DAN OPTIMIZATION
+doc_processor = SimpleDocumentProcessor()  # Processing dokumen untuk AI context
+prompt_engineer = SimplePromptEngineer()   # Engineering prompt untuk AI model
 
-# Initialize performance monitoring and caching
-performance_monitor = SimplePerformanceMonitor()
-response_cache = ResponseCache(max_size=200, ttl_minutes=60)
-response_monitor = ResponseMonitor()
+# 📊 KOMPONEN MONITORING DAN CACHING
+performance_monitor = SimplePerformanceMonitor()  # Monitor performa AI response
+response_cache = ResponseCache(max_size=200, ttl_minutes=60)  # Cache response AI
+response_monitor = ResponseMonitor()  # Monitor kualitas response
 
-# Initialize enhanced table processing
-table_parser = TableParser()
-response_formatter = ResponseFormatter()
-markdown_processor = MarkdownProcessor()
+# 🎨 KOMPONEN FORMATTING UNTUK FRONTEND
+table_parser = TableParser()  # Parse tabel dari AI response
+response_formatter = ResponseFormatter()  # Format response untuk frontend
+markdown_processor = MarkdownProcessor()  # Process markdown dari AI response
 
-# Streaming Response Handler for Long Responses
+# 🌊 STREAMING RESPONSE HANDLER - KOMUNIKASI REAL-TIME DENGAN AI
 class StreamingResponseHandler:
-    """Handle streaming responses to prevent frontend timeout"""
+    """
+    🔄 HANDLER STREAMING RESPONSE DARI AI MODEL
+    
+    🤖 KOMUNIKASI DENGAN AI MODEL:
+    1️⃣ Menerima streaming chunks dari Ollama API
+    2️⃣ Process chunk-by-chunk secara real-time
+    3️⃣ Monitor timeout dan error handling
+    4️⃣ Return complete response ke chat endpoint
+    
+    📊 TIDAK LANGSUNG DENGAN FRONTEND:
+    - Class ini fokus pada komunikasi dengan AI model
+    - Chat endpoint yang akan kirim hasil ke frontend
+    
+    Handle streaming responses to prevent frontend timeout
+    """
     
     async def process_streaming_response(self, response, timeout_seconds: float) -> str:
         """Process streaming response with timeout protection - SPEED OPTIMIZED"""
@@ -603,8 +670,29 @@ class StreamingResponseHandler:
 # Initialize streaming handler
 streaming_handler = StreamingResponseHandler()
 
+# 🎯 FASTAPI ENDPOINT UTAMA - KOMUNIKASI DENGAN FRONTEND DAN AI MODEL
 @app.post("/api/chat")
 async def chat_with_llama(request: ChatRequest):
+    """
+    🚀 MAIN CHAT ENDPOINT - BRIDGE ANTARA FRONTEND DAN AI MODEL
+    
+    📊 FLOW KOMUNIKASI:
+    1️⃣ Frontend → POST /api/chat → Backend (FastAPI)
+    2️⃣ Backend → Process request → Ollama AI Model
+    3️⃣ AI Model → Response → Backend → Frontend
+    
+    🔄 PARAMETER INPUT DARI FRONTEND:
+    - request.message: Pesan user dari React chat interface
+    - request.context: Konteks dokumen yang diupload
+    - request.conversation_history: Riwayat percakapan
+    - request.model_type: Jenis model AI yang dipilih
+    
+    📤 RESPONSE KE FRONTEND:
+    - response: Jawaban AI yang sudah diformat
+    - status: Status processing (complete/error)
+    - timing: Informasi performa untuk monitoring
+    - chat_context: Metadata konteks chat
+    """
     # Start timing
     start_time = time.time()
     request_start = datetime.now()
@@ -792,7 +880,7 @@ async def chat_with_llama(request: ChatRequest):
             payload_time = (time.time() - payload_start) * 1000
             logger.info(f"⚡ [TIMING] Payload preparation: {payload_time:.2f}ms")
             
-            logger.info(f"🚀 EXTENDED-TIMEOUT llama3:8b configuration")
+            logger.info(f"🚀 EXTENDED-TIMEOUT {ai_optimizer.config.model_name} configuration")  # 🔧 UBAH DISINI: Ganti nama model di log jika mengganti model
             logger.info(f"Context length: {request_payload['options']['num_ctx']}")
             logger.info(f"Max tokens: {request_payload['options']['num_predict']}")
             logger.info(f"Temperature: {request_payload['options']['temperature']}")
@@ -801,20 +889,28 @@ async def chat_with_llama(request: ChatRequest):
             logger.info(f"Prompt length: {len(optimized_prompt)} characters")
             logger.info(f"🌊 Streaming: ALWAYS ENABLED for responsiveness")
             
-            # Make request to Ollama with streaming support
+            # 🤖 KOMUNIKASI DENGAN AI MODEL OLLAMA
+            # Bagian ini menangani komunikasi langsung dengan Ollama AI server
             ollama_start = time.time()
             logger.info(f"🤖 [TIMING] Sending streaming request to Ollama at {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
             
             try:
-                # Always use streaming for responsiveness
+                # 📡 HTTP REQUEST KE OLLAMA API
+                # POST request ke Ollama server untuk mendapatkan response AI
                 response = await client.post(
-                    "http://localhost:11434/api/generate",
-                    json=request_payload,
+                    "http://localhost:11434/api/generate",  # 🔧 ENDPOINT OLLAMA: Pastikan Ollama berjalan dan model sudah di-pull dengan 'ollama pull <model_name>'
+                    # 📋 TROUBLESHOOTING CONNECTION:
+                    # ❌ Connection refused? -> Jalankan 'ollama serve' atau restart Ollama
+                    # ❌ Model not found? -> Download dulu dengan 'ollama pull <model_name>'
+                    # ❌ Port berbeda? -> Cek Ollama config, default port 11434
+                    # ❌ Firewall? -> Allow port 11434 atau disable firewall sementara
+                    json=request_payload,  # 🎯 PAYLOAD: Data yang dikirim ke AI model (prompt, parameters, dll)
                     timeout=timeout_seconds
                 )
                 
                 if response.status_code == 200:
-                    # Process streaming response with shorter timeout
+                    # 🌊 STREAMING RESPONSE PROCESSING
+                    # Process streaming response dari AI model untuk real-time output ke frontend
                     logger.info("🌊 Processing streaming response (SPEED MODE)...")
                     ai_response = await streaming_handler.process_streaming_response(
                         response, 
@@ -1051,13 +1147,14 @@ async def chat_with_llama(request: ChatRequest):
             
             logger.info(f"Final cleaned response length: {len(cleaned_response)} characters")
             
-            # Prepare response data with enhanced document context and streaming info
+            # 📤 PREPARE RESPONSE DATA UNTUK FRONTEND
+            # Struktur data yang akan dikirim kembali ke React frontend
             response_data = {
-                "response": cleaned_response,
-                "status": "complete",
-                "streaming_used": use_streaming,  # Inform frontend about streaming
-                "word_count": len(cleaned_response.split()),  # Add word count
-                "timing": {
+                "response": cleaned_response,  # 🎯 MAIN CONTENT: Jawaban AI yang sudah diformat
+                "status": "complete",  # 📊 STATUS: Informasi status processing
+                "streaming_used": use_streaming,  # 🌊 STREAMING INFO: Apakah menggunakan streaming
+                "word_count": len(cleaned_response.split()),  # 📝 METADATA: Jumlah kata untuk frontend
+                "timing": {  # ⏱️ PERFORMANCE DATA: Informasi timing untuk monitoring
                     "total_ms": total_time,
                     "ollama_ms": ollama_time,
                     "processing_ms": processing_time,
@@ -1072,7 +1169,7 @@ async def chat_with_llama(request: ChatRequest):
                         "response_processing": processing_time
                     }
                 },
-                "chat_context": {
+                "chat_context": {  # 🔄 CONTEXT INFO: Informasi konteks untuk frontend
                     "has_document_context": bool(final_context),
                     "is_document_chat": bool(final_context),
                     "document_source": "active_document" if not request.context else "uploaded_document"
@@ -1125,11 +1222,71 @@ async def chat_with_llama(request: ChatRequest):
                     "context_info": active_doc_info if active_doc_info else "📄 Analyzing uploaded document"
                 }
             
+            # � SAVE CHAT TO DATABASE
+            # Save both user message and AI response to database
+            try:
+                # Save user message
+                db_service.save_chat_message(
+                    message_type="user",
+                    content=request.message,
+                    session_id=request.session_id,  # Use session_id from request
+                    context_document_id=document_library.get_active_document().document_id if document_library.get_active_document() else None,
+                    model_used="user",
+                    processing_time_ms=0
+                )
+                
+                # Save AI response
+                db_service.save_chat_message(
+                    message_type="assistant",
+                    content=cleaned_response,
+                    session_id=request.session_id,  # Use session_id from request
+                    context_document_id=document_library.get_active_document().document_id if document_library.get_active_document() else None,
+                    model_used=ai_optimizer.config.model_name,
+                    processing_time_ms=int(total_time),
+                    response_metadata={
+                        "has_enhanced_formatting": response_data.get("enhanced_formatting", False),
+                        "table_count": len(response_data.get("table_metadata", [])),
+                        "markdown_formatting": response_data.get("markdown_formatting", False),
+                        "performance_status": perf_status
+                    }
+                )
+                
+                logger.info("💾 Chat messages saved to database successfully")
+                
+            except Exception as db_error:
+                logger.error(f"❌ Failed to save chat to database: {db_error}")
+                # Don't fail the request if database save fails
+            
+            # �📡 RETURN RESPONSE KE FRONTEND
+            # JSONResponse akan mengirim data kembali ke React frontend dalam format JSON
             return JSONResponse(response_data)
                 
     except httpx.ConnectError:
+        # 🚨 ERROR HANDLING - KONEKSI KE OLLAMA GAGAL
         total_time = (time.time() - start_time) * 1000
         error_msg = "Failed to connect to Ollama. Please ensure Ollama is running on http://localhost:11434"
+        
+        # 🚨 TROUBLESHOOTING GUIDE - CONNECTION ERROR:
+        # 1️⃣ CEK OLLAMA BERJALAN:
+        #    Windows: Cek Task Manager -> Ollama.exe running?
+        #    Linux/Mac: ps aux | grep ollama
+        # 
+        # 2️⃣ START OLLAMA SERVER:
+        #    ollama serve
+        #    # Atau restart Ollama application
+        #
+        # 3️⃣ CEK PORT:
+        #    netstat -an | findstr 11434  (Windows)
+        #    netstat -an | grep 11434     (Linux/Mac)
+        #
+        # 4️⃣ CEK MODEL TERSEDIA:
+        #    ollama list
+        #    # Jika kosong, download model dulu: ollama pull llama3:8b
+        #
+        # 5️⃣ TEST OLLAMA:
+        #    curl http://localhost:11434/api/tags
+        #    # Should return list of models
+        
         logger.error(f"❌ [TIMING] Connection error after {total_time:.2f}ms: {error_msg}")
         raise HTTPException(status_code=503, detail=error_msg)
     except httpx.TimeoutException:
@@ -1354,10 +1511,25 @@ def extract_text_from_docx(file_path: str) -> str:
         logger.error(f"Error saat mengekstrak teks dari DOCX: {e}")
         return f"Error saat membaca DOCX: {str(e)}"
 
-# Endpoint untuk mengunggah dan memproses dokumen
+# 📁 FASTAPI ENDPOINT - UPLOAD DOKUMEN DARI FRONTEND
 @app.post("/api/upload_document", response_model=DocumentResponse)
 async def upload_document(file: UploadFile = File(...)):
-    """Upload dan proses dokumen (PDF atau DOCX)."""
+    """
+    📤 ENDPOINT UPLOAD DOKUMEN DARI FRONTEND
+    
+    🔄 FLOW KOMUNIKASI:
+    1️⃣ Frontend → Upload file (PDF/DOCX) → Backend
+    2️⃣ Backend → Simpan file → Extract text → AI Analysis
+    3️⃣ Backend → Response dengan document_id → Frontend
+    
+    📊 KOMUNIKASI DENGAN FRONTEND:
+    - Input: UploadFile dari form-data request
+    - Output: DocumentResponse dengan document_id dan content
+    
+    🤖 TIDAK ADA KOMUNIKASI LANGSUNG DENGAN AI MODEL
+    - Endpoint ini hanya menyimpan dan extract text
+    - AI analysis dilakukan di endpoint /api/chat dengan context
+    """
     logger.info(f"Menerima permintaan upload file: {file.filename}")
     
     try:
@@ -1480,11 +1652,25 @@ async def upload_document(file: UploadFile = File(...)):
         logger.error(f"Error saat mengunggah dokumen: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error saat mengunggah dokumen: {str(e)}")
 
-# Document Library API Endpoints
+# 📚 FASTAPI ENDPOINT - DOCUMENT LIBRARY MANAGEMENT
+# Endpoint-endpoint ini menangani komunikasi dengan frontend untuk manajemen dokumen
 
 @app.get("/api/documents")
-async def get_document_library():
-    """Get all documents in the library"""
+async def get_all_documents():
+    """
+    📋 ENDPOINT GET ALL DOCUMENTS - KOMUNIKASI DENGAN FRONTEND
+    
+    🔄 FLOW KOMUNIKASI:
+    1️⃣ Frontend → GET /api/documents → Backend
+    2️⃣ Backend → Load document library → Response ke Frontend
+    
+    📊 KOMUNIKASI DENGAN FRONTEND:
+    - Input: HTTP GET request dari React component
+    - Output: List semua dokumen dalam library untuk ditampilkan di sidebar
+    
+    🤖 TIDAK ADA KOMUNIKASI DENGAN AI MODEL
+    - Endpoint ini hanya mengembalikan metadata dokumen
+    """
     try:
         documents = document_library.get_all_documents()
         
@@ -1551,7 +1737,22 @@ async def get_document_details(document_id: str):
 
 @app.post("/api/documents/{document_id}/select")
 async def select_document(document_id: str):
-    """Select a document as the active document for chat"""
+    """
+    🎯 ENDPOINT SELECT ACTIVE DOCUMENT - KOMUNIKASI DENGAN FRONTEND
+    
+    🔄 FLOW KOMUNIKASI:
+    1️⃣ Frontend → POST /api/documents/{id}/select → Backend
+    2️⃣ Backend → Set active document → Clear cache → Response
+    3️⃣ Backend → Future chat requests will use this document context
+    
+    📊 KOMUNIKASI DENGAN FRONTEND:
+    - Input: document_id dari user selection di sidebar
+    - Output: Success status dan active document info
+    
+    🤖 TIDAK LANGSUNG DENGAN AI MODEL, TAPI MEMPENGARUHI:
+    - Mengatur dokumen mana yang akan digunakan sebagai context
+    - Chat selanjutnya akan menggunakan dokumen ini untuk AI analysis
+    """
     try:
         success = document_library.set_active_document(document_id)
         
@@ -1749,6 +1950,23 @@ async def start_multi_document_analysis(request: MultiDocumentAnalysisRequest):
     Processes multiple documents sequentially for optimal AI performance
     """
     try:
+        # Test Ollama connection first
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as test_client:
+                test_response = await test_client.get("http://localhost:11434/api/tags")
+                if test_response.status_code != 200:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="Ollama service not available. Please ensure Ollama is running."
+                    )
+                logger.info("✅ Ollama connection test successful")
+        except Exception as conn_error:
+            logger.error(f"❌ Ollama connection failed: {conn_error}")
+            raise HTTPException(
+                status_code=503, 
+                detail=f"Cannot connect to Ollama service: {conn_error}"
+            )
+        
         # Generate analysis session ID
         analysis_id = str(uuid.uuid4())
         
@@ -1807,6 +2025,19 @@ async def process_multi_documents_sequential(analysis_id: str, user_message: str
         session = multi_doc_sessions[analysis_id]
         session.status = "processing"
         
+        # 🔍 TEST OLLAMA CONNECTION FIRST
+        logger.info("🔍 Testing Ollama connection before multi-document analysis...")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as test_client:
+                test_response = await test_client.get("http://localhost:11434/api/tags")
+                if test_response.status_code != 200:
+                    raise Exception(f"Ollama server not responding properly: {test_response.status_code}")
+                logger.info("✅ Ollama connection test successful")
+        except Exception as conn_error:
+            logger.error(f"❌ Ollama connection failed: {conn_error}")
+            session.status = "error"
+            raise Exception(f"Cannot connect to Ollama server: {conn_error}")
+        
         results = []
         
         for i, document in enumerate(documents):
@@ -1814,20 +2045,24 @@ async def process_multi_documents_sequential(analysis_id: str, user_message: str
             session.progress.currentDocument = document.original_filename
             session.progress.completed = i
             
+            # Initialize timing
+            start_time = time.time()
+            
             try:
-                start_time = time.time()
-                
                 # Get full document content
                 file_path = os.path.join(UPLOAD_FOLDER, document.filename)
                 if not os.path.exists(file_path):
                     raise Exception(f"Document file not found: {document.filename}")
                 
+                logger.info(f"🔄 Processing document {i+1}/{len(documents)}: {document.original_filename}")
+                logger.info(f"📁 File path: {file_path}")
+                
                 full_content = await extract_text_from_document(file_path)
                 
-                # Prepare context for this specific document
+                # Prepare context for this specific document - OPTIMIZED FOR SPEED
                 document_context = f"""Document: {document.original_filename}
 File Type: {document.file_type}
-Content: {full_content[:8000]}"""  # Limit to 8KB for llama3:8b
+Content: {full_content[:4000]}"""  # 🚀 REDUCED: Limit to 4KB for faster processing (was 8KB)
                 
                 # Create optimized prompt for this document
                 optimized_prompt = prompt_engineer.create_document_prompt(
@@ -1836,59 +2071,170 @@ Content: {full_content[:8000]}"""  # Limit to 8KB for llama3:8b
                     []  # Fresh context for each document
                 )
                 
-                # Send to AI using optimized configuration
-                request_payload = ai_optimizer.get_optimized_payload(optimized_prompt)
+                # Send to AI using optimized configuration - FORCE NON-STREAMING for multi-doc
+                request_payload = ai_optimizer.get_optimized_payload(optimized_prompt, use_streaming=False)
                 
-                async with httpx.AsyncClient(timeout=300.0) as client:  # 5 minute timeout per document
-                    response = await client.post(
-                        "http://localhost:11434/api/generate",
-                        json=request_payload,
-                        timeout=300.0
-                    )
-                    
-                    if response.status_code == 200:
-                        result_data = response.json()
-                        ai_response = result_data.get("response", "No response generated")
-                        
-                        # Clean the response
-                        cleaned_response = response_monitor.clean_response(ai_response)
-                        
-                        processing_time = time.time() - start_time
-                        
-                        # Create result
-                        result = MultiDocumentResult(
-                            document_id=document.document_id,
-                            filename=document.original_filename,
-                            result=cleaned_response,
-                            status="completed",
-                            processing_time=round(processing_time, 2),
-                            timestamp=datetime.now()
+                # 🚀 ULTRA-FAST MODE: Override parameters for multi-document speed
+                request_payload["options"].update({
+                    "temperature": 0.3,     # 🚀 EVEN LOWER: Maximum speed
+                    "top_p": 0.6,          # 🚀 EVEN LOWER: More deterministic
+                    "top_k": 15,           # 🚀 EVEN LOWER: Highly focused
+                    "num_ctx": 1536,       # 🚀 SMALLER: Very fast context
+                    "num_predict": 800,    # 🚀 SHORTER: Quick responses
+                    "repeat_penalty": 1.05  # 🚀 MINIMAL: Less processing
+                })
+                
+                logger.info(f"🔄 Processing document {i+1}/{len(documents)}: {document.original_filename}")
+                logger.info(f"📊 Document content length: {len(full_content)} chars")
+                logger.info(f"🎯 Prompt length: {len(optimized_prompt)} chars")
+                logger.info(f"⚡ ULTRA-FAST MODE: ctx={request_payload['options']['num_ctx']}, pred={request_payload['options']['num_predict']}")
+                
+                # Try with fast settings first, fallback to timeout retry if needed
+                max_retries = 2
+                retry_count = 0
+                
+                while retry_count < max_retries:
+                    try:
+                
+                        # Create client with progressive timeout strategy
+                        base_timeout = 180.0 if retry_count == 0 else 300.0  # Start with 3min, then 5min
+                        timeout_config = httpx.Timeout(
+                            connect=30.0,
+                            read=base_timeout,
+                            write=30.0,
+                            pool=30.0
                         )
                         
-                        results.append(result)
-                        session.progress.results = results
-                        session.progress.completed = i + 1
-                        
-                        logger.info(f"✅ Completed analysis for {document.original_filename} in {processing_time:.2f}s")
-                    else:
-                        raise Exception(f"Ollama API returned status {response.status_code}")
+                        async with httpx.AsyncClient(timeout=timeout_config) as client:
+                            logger.info(f"🕐 Attempt {retry_count + 1}/{max_retries} with {base_timeout/60:.1f}min timeout...")
+                            response = await client.post(
+                                "http://localhost:11434/api/generate",
+                                json=request_payload
+                            )
+                            
+                            logger.info(f"📡 Ollama response status: {response.status_code}")
+                            
+                            if response.status_code == 200:
+                                try:
+                                    # Log raw response for debugging
+                                    raw_response = response.text
+                                    logger.info(f"📥 Raw Ollama response length: {len(raw_response)} chars")
+                                    logger.info(f"📥 Raw response preview: {raw_response[:200]}...")
+                                    
+                                    result_data = response.json()
+                                    ai_response = result_data.get("response", "")
+                                    
+                                    # Debug the parsed data
+                                    logger.info(f"📊 Parsed response keys: {list(result_data.keys())}")
+                                    logger.info(f"✅ AI response length: {len(ai_response)} chars")
+                                    
+                                    # Validate response
+                                    if not ai_response or len(ai_response.strip()) < 5:
+                                        logger.error(f"❌ AI response validation failed: '{ai_response[:100]}...'")
+                                        raise Exception(f"AI response too short or empty: '{ai_response[:50]}'")
+                                    
+                                    # Success - break retry loop
+                                    break
+                                    
+                                except json.JSONDecodeError as json_error:
+                                    logger.error(f"❌ JSON parsing error: {json_error}")
+                                    logger.error(f"Raw response: {response.text[:500]}...")
+                                    raise Exception(f"Failed to parse Ollama JSON response: {json_error}")
+                                except Exception as parse_error:
+                                    logger.error(f"❌ Response parsing error: {parse_error}")
+                                    logger.error(f"Raw response: {response.text[:500]}...")
+                                    raise Exception(f"Failed to process Ollama response: {parse_error}")
+                            else:
+                                # Enhanced error handling for non-200 responses
+                                error_detail = f"Ollama API returned status {response.status_code}"
+                                try:
+                                    error_response = response.text
+                                    logger.error(f"❌ Ollama error response: {error_response[:500]}...")
+                                    error_detail += f": {error_response[:200]}"
+                                except Exception:
+                                    pass
+                                
+                                raise Exception(error_detail)
+                    
+                    except httpx.ReadTimeout as timeout_error:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            # Make parameters even more aggressive for retry
+                            logger.warning(f"⏱️ Timeout on attempt {retry_count}, trying with even faster settings...")
+                            request_payload["options"].update({
+                                "num_ctx": 1024,       # 🚀 MINIMAL: Tiny context
+                                "num_predict": 500,    # 🚀 MINIMAL: Very short responses
+                                "temperature": 0.2,    # 🚀 MINIMAL: Maximum determinism
+                                "top_p": 0.5,          # 🚀 MINIMAL: Highly focused
+                                "top_k": 10            # 🚀 MINIMAL: Very limited vocab
+                            })
+                            logger.info(f"🚀 RETRY MODE: ctx={request_payload['options']['num_ctx']}, pred={request_payload['options']['num_predict']}")
+                            continue
+                        else:
+                            # Final timeout - give up
+                            raise timeout_error
+                    
+                    except Exception as other_error:
+                        # Non-timeout errors should not be retried
+                        raise other_error
+                
+                # If we reach here, the request was successful - process the response
+                cleaned_response = response_monitor.clean_response(ai_response)
+                
+                processing_time = time.time() - start_time
+                
+                # Create result
+                result = MultiDocumentResult(
+                    document_id=document.document_id,
+                    filename=document.original_filename,
+                    result=cleaned_response,
+                    status="completed",
+                    processing_time=round(processing_time, 2),
+                    timestamp=datetime.now()
+                )
+                
+                results.append(result)
+                session.progress.results = results
+                session.progress.completed = i + 1
+                
+                logger.info(f"✅ Completed analysis for {document.original_filename} in {processing_time:.2f}s (attempt {retry_count + 1})")
                 
             except Exception as e:
-                # Handle individual document processing error
+                # Handle individual document processing error with detailed logging
+                try:
+                    processing_time = time.time() - start_time
+                except:
+                    processing_time = 0.0
+                    
+                error_message = str(e)
+                
+                # Enhanced error logging
+                logger.error(f"❌ Error processing {document.original_filename}:")
+                logger.error(f"   Error type: {type(e).__name__}")
+                logger.error(f"   Error message: {error_message}")
+                logger.error(f"   Processing time: {processing_time:.2f}s")
+                logger.error(f"   Document ID: {document.document_id}")
+                logger.error(f"   File path: {os.path.join(UPLOAD_FOLDER, document.filename)}")
+                
+                # Log traceback for debugging
+                try:
+                    logger.error(f"   Traceback: {traceback.format_exc()}")
+                except Exception as tb_error:
+                    logger.error(f"   Could not log traceback: {tb_error}")
+                
                 error_result = MultiDocumentResult(
                     document_id=document.document_id,
                     filename=document.original_filename,
                     result="",
                     status="error",
-                    error_message=str(e),
+                    processing_time=round(processing_time, 2),
+                    error_message=error_message,
                     timestamp=datetime.now()
                 )
                 
                 results.append(error_result)
                 session.progress.results = results
                 session.progress.completed = i + 1
-                
-                logger.error(f"❌ Error processing {document.original_filename}: {e}")
         
         # Mark session as completed
         session.status = "completed"
@@ -1952,14 +2298,180 @@ async def get_analysis_status(analysis_id: str):
         logger.error(f"Error getting analysis status: {e}")
         raise HTTPException(status_code=500, detail=f"Status error: {str(e)}")
 
-# Run server directly if this file is executed
+# ═══════════════════════════════════════════════════════════════
+# � CHAT HISTORY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/chat/history")
+async def get_chat_history(limit: int = 50):
+    """Get chat history from database"""
+    try:
+        chat_history = db_service.get_default_chat_history(limit=limit)
+        
+        return {
+            "success": True,
+            "chat_history": chat_history,
+            "total_messages": len(chat_history),
+            "message": f"Retrieved {len(chat_history)} chat messages"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting chat history: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting chat history: {str(e)}")
+
+@app.delete("/api/chat/history")
+async def clear_chat_history():
+    """Clear all chat history from database"""
+    try:
+        cleared_count = db_service.clear_chat_history()
+        
+        return {
+            "success": True,
+            "cleared_count": cleared_count,
+            "message": f"Cleared {cleared_count} chat messages from database"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error clearing chat history: {e}")
+        raise HTTPException(status_code=500, detail=f"Error clearing chat history: {str(e)}")
+
+# ═══════════════════════════════════════════════════════════════
+# 💬 CHAT SESSION MANAGEMENT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/api/chat/sessions")
+async def create_chat_session(request: dict):
+    """Create new chat session"""
+    try:
+        title = request.get("title", "New Chat")
+        metadata = request.get("metadata", {})
+        
+        logger.info(f"Creating chat session with title: {title}")
+        session_id = db_service.create_new_session(title=title, metadata=metadata)
+        logger.info(f"Chat session created successfully: {session_id}")
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "title": title,
+            "message": "Chat session created successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating chat session: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error creating chat session: {str(e)}")
+
+@app.put("/api/chat/sessions/{session_id}/title")
+async def update_session_title(session_id: str, request: dict):
+    """Update chat session title"""
+    try:
+        new_title = request.get("title", "").strip()
+        if not new_title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        
+        logger.info(f"Updating session {session_id} title to: {new_title}")
+        success = db_service.update_session_title(session_id, new_title)
+        
+        if success:
+            logger.info(f"Session title updated successfully: {session_id}")
+            return {
+                "success": True,
+                "session_id": session_id,
+                "new_title": new_title,
+                "message": "Session title updated successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating session title: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error updating session title: {str(e)}")
+
+@app.get("/api/chat/sessions")
+async def get_chat_sessions(limit: int = 50):
+    """Get all chat sessions"""
+    try:
+        sessions = db_service.get_all_sessions(limit=limit)
+        
+        return {
+            "success": True,
+            "sessions": sessions,
+            "total_sessions": len(sessions),
+            "message": f"Retrieved {len(sessions)} chat sessions"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting chat sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting chat sessions: {str(e)}")
+
+@app.get("/api/chat/history/{session_id}")
+async def get_session_history(session_id: str, limit: int = 50):
+    """Get chat history for specific session"""
+    try:
+        chat_history = db_service.get_chat_history(session_id, limit=limit)
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "chat_history": chat_history,
+            "total_messages": len(chat_history),
+            "message": f"Retrieved {len(chat_history)} messages for session {session_id}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting session history: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting session history: {str(e)}")
+
+@app.get("/api/chat/sessions")
+async def get_chat_sessions():
+    """Get all chat sessions from database"""
+    try:
+        sessions = db_service.get_chat_sessions()
+        
+        return {
+            "success": True,
+            "sessions": sessions,
+            "total_sessions": len(sessions),
+            "message": f"Retrieved {len(sessions)} chat sessions"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting chat sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting chat sessions: {str(e)}")
+
+# ═══════════════════════════════════════════════════════════════
+# �🚀 SERVER STARTUP SECTION - ENTRY POINT
+# ═══════════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
-    import uvicorn
+    """
+    🚀 MAIN ENTRY POINT - STARTUP SERVER
     
-    print("🚀 Starting Dokai Chat Backend Server...")
-    print("📡 Server will be available at: http://localhost:8000")
-    print("📚 API Documentation: http://localhost:8000/docs")
-    print("🔄 Auto-reload enabled for development")
+    🔧 CARA MENJALANKAN SERVER:
+    1️⃣ Method 1 (Direct): python main.py
+    2️⃣ Method 2 (Uvicorn): uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    3️⃣ Method 3 (Production): uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+    
+    📊 SERVER CONFIGURATION:
+    - Host: 0.0.0.0 (Allow all connections)
+    - Port: 8000 (Default backend port)
+    - Reload: True (Auto-restart on code changes)
+    - Log Level: info (Detailed logging)
+    
+    🔗 URL ACCESS:
+    - Local: http://localhost:8000
+    - Network: http://[your-ip]:8000
+    - API Docs: http://localhost:8000/docs
+    - OpenAPI: http://localhost:8000/openapi.json
+    """
+    import uvicorn
+    print("\n" + "="*60)
     
     try:
         uvicorn.run(
@@ -1967,11 +2479,15 @@ if __name__ == "__main__":
             host="0.0.0.0",
             port=8000,
             reload=True,
-            log_level="info"
+            log_level="info",
+            access_log=True
         )
     except KeyboardInterrupt:
         print("\n🛑 Server stopped by user")
     except Exception as e:
-        print(f"❌ Error starting server: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n❌ Server startup error: {e}")
+        print("\n🔧 Troubleshooting:")
+        print("   1. Check if port 8000 is available")
+        print("   2. Install dependencies: pip install -r requirements.txt")
+        print("   3. Check Python version: python --version")
+        print("   4. Try alternative: uvicorn main:app --port 8001")
