@@ -485,11 +485,35 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
   };
 
   const clearDocumentSelections = async () => {
+    try {
+      // ✅ FIXED: Clear global active document in backend first
+      console.log('🧹 [API] Clearing active document in backend...');
+      
+      const response = await fetch('http://localhost:8000/api/documents/clear-selection', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (!response.ok) {
+        console.error('❌ Failed to clear active document in backend');
+      } else {
+        console.log('✅ [API] Active document cleared in backend');
+      }
+      
+    } catch (error) {
+      console.error('❌ Error clearing active document:', error);
+    }
+    
+    // Clear frontend state
     setSelectedDocuments([]);
     setCurrentDocument(null);
     
-    // ✅ NEW: No backend call needed, just clear for current session
-    // ✅ NEW: Save document context to current chat session
+    // ✅ Reload document library to reflect backend changes
+    await loadDocumentLibrary();
+    
+    // ✅ Save document context to current chat session
     setTimeout(() => saveDocumentContextToCurrentChat(), 100);
   };
 
@@ -1547,7 +1571,7 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
   };
 
   // 📚 DOCUMENT LIBRARY FUNCTIONS - KOMUNIKASI DENGAN BACKEND
-  const loadDocumentLibrary = async () => {
+  const loadDocumentLibrary = async (skipAutoSync: boolean = false) => {
     /**
      * 📥 LOAD DOCUMENT LIBRARY DARI BACKEND
      * 
@@ -1555,6 +1579,8 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
      * - GET /api/documents → Mengambil semua dokumen dari backend
      * - Update state documentLibrary dengan data dari server
      * - Sync dengan selection state jika diperlukan
+     * 
+     * @param skipAutoSync - Skip auto-sync after manual clear operations
      */
     try {
       setIsLoadingLibrary(true);
@@ -1575,8 +1601,24 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
       
       setDocumentLibrary(safeLibrary);  // 📊 Update state dengan data dari backend
       
-      // Sync with current selection - if we have an active document and no current selections
-      if (safeLibrary?.active_document && selectedDocuments.length === 0) {
+      // ✅ CRITICAL FIX: Skip auto-sync if explicitly requested (after manual clear)
+      if (skipAutoSync) {
+        console.log('🚫 [SKIP SYNC] Auto-sync skipped as requested');
+        return;
+      }
+      
+      // ✅ CRITICAL FIX: NEVER auto-sync after manual clear operation
+      // Check if this was a manual clear (no active document in backend AND frontend is clear)
+      if (!safeLibrary?.active_document && selectedDocuments.length === 0 && !currentDocument) {
+        // ✅ This is the desired clear state - do nothing
+        console.log('✅ [CLEAR STATE] Documents are properly cleared - no auto-sync needed');
+        return;
+      }
+      
+      // ✅ Only auto-sync if there's an active document in backend but frontend is empty
+      // This handles cases like page refresh or new session load
+      if (safeLibrary?.active_document && selectedDocuments.length === 0 && !currentDocument) {
+        console.log('🔄 [PAGE REFRESH] Auto-syncing with backend active document:', safeLibrary.active_document.filename);
         setSelectedDocuments([safeLibrary.active_document.document_id]);
         setCurrentDocument({
           id: safeLibrary.active_document.document_id,
@@ -1907,9 +1949,41 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
   };
 
   const clearDocumentSelection = async () => {
-    // ✅ NEW: Clear document context for current chat session only
+    try {
+      // ✅ CRITICAL: Clear global active document in backend first
+      console.log('🧹 [API] Clearing active document in backend...');
+      
+      const response = await fetch('http://localhost:8000/api/documents/clear-selection', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (!response.ok) {
+        console.error('❌ Failed to clear active document in backend');
+        throw new Error('Backend clear failed');
+      } else {
+        console.log('✅ [API] Active document cleared in backend successfully');
+      }
+      
+    } catch (error) {
+      console.error('❌ Error clearing active document in backend:', error);
+      // Don't proceed if backend clear fails
+      alert('❌ Failed to clear document. Please try again.');
+      return;
+    }
+    
+    // ✅ IMMEDIATE: Clear frontend state first
+    console.log('🧹 [FRONTEND] Clearing frontend document state...');
     setSelectedDocuments([]);
     setCurrentDocument(null);
+    
+    // ✅ CRITICAL: Update document library state to reflect cleared backend
+    setDocumentLibrary(prev => ({
+      ...prev,
+      active_document: null
+    }));
     
     // Add system message to chat about clearing document context
     const systemMessage: Message = {
@@ -1933,7 +2007,7 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
             return {
               ...chat,
               messages: updatedChat,
-              // ✅ NEW: Clear document context for this session
+              // ✅ Clear document context for this session
               documentContext: {
                 activeDocument: null,
                 selectedDocuments: [],
@@ -1947,7 +2021,14 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
       setChatHistory(updatedHistory);
     }
     
-    console.log('🧹 Document context cleared for current chat session');
+    // ✅ CRITICAL: Reload document library to sync with backend state
+    console.log('🔄 [SYNC] Reloading document library to reflect backend changes...');
+    await loadDocumentLibrary(true); // Skip auto-sync after manual clear
+    
+    console.log('✅ [SUCCESS] Document context cleared completely - library refreshed');
+    
+    // Show immediate feedback
+    alert('✅ Document cleared successfully!');
   };
 
   // 📊 Filter documents based on search query
@@ -1956,7 +2037,7 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
     doc.content_preview.toLowerCase().includes(searchQuery.toLowerCase())
   ) || [];
 
-  // �📊 File size formatting for user-friendly display
+  // 📊 File size formatting for user-friendly display
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;

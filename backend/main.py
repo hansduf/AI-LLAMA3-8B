@@ -1829,25 +1829,29 @@ async def delete_document_from_library(document_id: str):
 async def clear_document_selection():
     """Clear active document selection"""
     try:
-        documents = document_library.get_all_documents()
+        # CRITICAL FIX: Use database service directly to clear active documents
+        logger.info("🧹 Clearing active document selection in database...")
         
-        # Set all documents as inactive
+        # Clear active document in database
+        db_service.set_active_document("")  # Empty string clears all active documents
+        
+        # Also update in-memory document library
+        documents = document_library.get_all_documents()
         for doc in documents:
             doc.is_active = False
-        
-        document_library.save_metadata(documents)
         
         # CRITICAL: Clear cache when clearing document selection
         response_cache.clear()
         logger.info("🧹 Cache cleared after clearing document selection")
         
+        logger.info("✅ Document selection cleared successfully")
         return {
             "success": True,
             "message": "Document selection cleared"
         }
         
     except Exception as e:
-        logger.error(f"Error clearing document selection: {e}")
+        logger.error(f"❌ Error clearing document selection: {e}")
         raise HTTPException(status_code=500, detail=f"Error clearing selection: {str(e)}")
 
 @app.get("/api/documents/active")
