@@ -51,6 +51,7 @@ import {
   XMarkIcon
 } from '@heroicons/react/24/outline';
 import Image from 'next/image';
+import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 // Import enhanced table components and markdown renderer
@@ -179,15 +180,23 @@ interface MultiDocAnalysisResponse {
   progress: ProcessingProgress;
 }
 
-export default function Home() {
-  console.log('🎯 [COMPONENT] Home component loaded/re-rendered');
+// Props interface for session-based routing
+interface HomeProps {
+  initialSessionId?: string;
+}
+
+export default function Home({ initialSessionId }: HomeProps = {}) {
+  console.log('🎯 [COMPONENT] Home component loaded/re-rendered', { initialSessionId });
   
   // 🎛️ REACT STATE MANAGEMENT - STATE VARIABLES UNTUK UI DAN DATA
+  const router = useRouter();  // Next.js router for navigation
   
   // 🎨 UI STATE - Mengatur tampilan dan interaksi interface
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);  // Sidebar collapse state
-  const [selectedChat, setSelectedChat] = useState<string | null>(null);  // Active chat session
+  // ✅ FIXED: Initialize selectedChat with initialSessionId to prevent race condition
+  const [selectedChat, setSelectedChat] = useState<string | null>(initialSessionId || null);  // Active chat session
   const [inputMessage, setInputMessage] = useState('');  // User input text
+  const [isAutoSending, setIsAutoSending] = useState(false);  // Flag for auto-send to prevent loops
   
   // 💬 CHAT STATE - Data percakapan dan history
   const [chatHistory, setChatHistory] = useState<ChatGroup[]>([]);  // All chat sessions
@@ -275,119 +284,58 @@ export default function Home() {
     setIsSidebarCollapsed(!isSidebarCollapsed);
   };
 
-  // 💬 Chat selection with visual state management
-  // 💬 Chat selection with document context restoration
+  // 💬 Chat selection with document context restoration and URL management
   const handleChatSelect = (chatId: string) => {
-    setSelectedChat(chatId);
-    // Find and set current chat messages and restore document context
-    for (const group of chatHistory) {
-      const chat = group.items.find(item => item.id === chatId);
-      if (chat) {
-        setCurrentChat(chat.messages);
-        
-        // ✅ NEW: Restore document context for this chat session
-        if (chat.documentContext) {
-          setCurrentDocument(chat.documentContext.activeDocument || null);
-          setSelectedDocuments(chat.documentContext.selectedDocuments || []);
-          
-          // Update documentLibrary to reflect active document for this session
-          if (chat.documentContext.activeDocument) {
-            // ✅ FIXED: Add null safety checks
-            const activeDoc = chat.documentContext.activeDocument;
-            setDocumentLibrary(prev => ({
-              ...prev,
-              active_document: {
-                document_id: activeDoc.id,
-                filename: activeDoc.filename,
-                file_type: activeDoc.filename.includes('.pdf') ? '.pdf' : '.docx',
-                content_preview: activeDoc.content ? activeDoc.content.substring(0, 200) + '...' : '',
-                // ✅ NEW: Add missing required properties
-                upload_date: new Date().toISOString(),
-                file_size: activeDoc.content ? activeDoc.content.length : 0,
-                is_active: true,
-                analysis_summary: null
-              }
-            }));
-          } else {
-            setDocumentLibrary(prev => ({
-              ...prev,
-              active_document: null
-            }));
-          }
-        } else {
-          // Fallback: clear document context if no context saved
-          setCurrentDocument(null);
-          setSelectedDocuments([]);
-          setDocumentLibrary(prev => ({
-            ...prev,
-            active_document: null
-          }));
-        }
-        
-        console.log(`🔄 Chat selected: ${chatId}, Document context restored`);
-        break;
-      }
-    }
+    console.log(`🔄 [CHAT SELECT] Redirecting to session URL: /chat/${chatId}`);
+    
+    // 🚀 REDIRECT TO SESSION URL - All chat interactions must have session ID in URL
+    router.push(`/chat/${chatId}`);
+    
+    // Note: The actual session loading will happen in the session page component
+    // This ensures consistent URL-based session management
   };
 
   // ➕ Create new chat with smart date grouping and isolated document context
-  const createNewChat = async () => {
-    // Create session in backend first
-    const sessionId = await createNewSession('New Conversation');
-    if (!sessionId) {
-      console.error('Failed to create backend session');
-      return;
-    }
-    
-    const currentDate = new Date();
-    const monthYear = currentDate.toLocaleDateString('en-US', { 
-      month: 'long', 
-      year: 'numeric' 
-    });
-
-    const newChat: ChatSession = {
-      id: sessionId,  // Use backend session ID
-      title: 'New Conversation',
-      messages: [],
-      createdAt: currentDate,
-      // ✅ NEW: Initialize empty document context per session
-      documentContext: {
-        activeDocument: null,
-        selectedDocuments: [],
-        documentSettings: {}
+  const createNewChat = async (autoRedirect: boolean = true) => {  // Changed default to true
+    try {
+      // Create session in backend first
+      const sessionId = await createNewSession('New Conversation');
+      if (!sessionId) {
+        console.error('Failed to create backend session');
+        return;
       }
-    };
-
-    // Check if we already have a group for this month
-    const existingGroupIndex = chatHistory.findIndex(group => group.date === monthYear);
-
-    if (existingGroupIndex !== -1) {
-      const updatedHistory = [...chatHistory];
-      updatedHistory[existingGroupIndex].items = [newChat, ...updatedHistory[existingGroupIndex].items];
-      setChatHistory(updatedHistory);
-    } else {
-      // Create new group for this month
-      const newGroup: ChatGroup = {
-        date: monthYear,
-        items: [newChat]
-      };
-      setChatHistory([newGroup, ...chatHistory]);
+      
+      console.log(`🆕 Created new session in backend: ${sessionId}`);
+      
+      // ✅ IMMEDIATE RELOAD: Force reload to show new session immediately
+      await loadChatHistory(sessionId);
+      
+      // ✅ SET SELECTION: Ensure the new session is selected
+      setSelectedChat(sessionId);
+      setCurrentChat([]);
+      
+      // ✅ NEW: Clear global document state when creating new chat
+      setCurrentDocument(null);
+      setSelectedDocuments([]);
+      setDocumentLibrary(prev => ({
+        ...prev,
+        active_document: null
+      }));
+      
+      console.log(`✅ New chat created and loaded: ${sessionId}`);
+      
+      // 🚀 NEW: Auto-redirect to session URL by default (for full URL-based management)
+      if (autoRedirect) {
+        console.log(`🔄 Auto-redirecting to /chat/${sessionId}`);
+        router.push(`/chat/${sessionId}`);
+      }
+      
+      return sessionId;  // Return the session ID for use in handleSendMessage
+      
+    } catch (error) {
+      console.error('Error in createNewChat:', error);
+      return null;
     }
-
-    setSelectedChat(sessionId);  // Use sessionId instead of newChatId
-    setCurrentChat([]);
-    
-    // ✅ NEW: Clear global document state when creating new chat
-    setCurrentDocument(null);
-    setSelectedDocuments([]);
-    setDocumentLibrary(prev => ({
-      ...prev,
-      active_document: null
-    }));
-    
-    console.log(`✅ New chat created with ID: ${sessionId}`);
-    
-    return sessionId;  // Return the session ID for use in handleSendMessage
   };
 
   // ✏️ Rename chat function
@@ -429,25 +377,47 @@ export default function Home() {
   };
 
   // 🗑️ Delete chat function
-  const deleteChat = (chatId: string, event: React.MouseEvent) => {
+  const deleteChat = async (chatId: string, event: React.MouseEvent) => {
     event.stopPropagation();
     
     if (!confirm('Are you sure you want to delete this chat?')) {
       return;
     }
 
-    // Remove chat from history
-    const updatedHistory = chatHistory.map(group => ({
-      ...group,
-      items: group.items.filter(chat => chat.id !== chatId)
-    })).filter(group => group.items.length > 0); // Remove empty groups
+    try {
+      // 🚀 CALL BACKEND API TO DELETE FROM DATABASE
+      const response = await fetch(`http://localhost:8000/api/chat/sessions/${chatId}`, {
+        method: 'DELETE'
+      });
 
-    setChatHistory(updatedHistory);
+      if (!response.ok) {
+        throw new Error('Failed to delete chat session from backend');
+      }
 
-    // If deleted chat was selected, clear current chat
-    if (selectedChat === chatId) {
-      setSelectedChat(null);
-      setCurrentChat([]);
+      const result = await response.json();
+      
+      if (result.success) {
+        // Only update frontend state AFTER successful backend delete
+        const updatedHistory = chatHistory.map(group => ({
+          ...group,
+          items: group.items.filter(chat => chat.id !== chatId)
+        })).filter(group => group.items.length > 0); // Remove empty groups
+
+        setChatHistory(updatedHistory);
+
+        // If deleted chat was selected, clear current chat
+        if (selectedChat === chatId) {
+          setSelectedChat(null);
+          setCurrentChat([]);
+        }
+
+        console.log(`✅ Chat session ${chatId} deleted successfully`);
+      } else {
+        throw new Error('Backend returned failure status');
+      }
+    } catch (error) {
+      console.error('Error deleting chat session:', error);
+      alert('Failed to delete chat session. Please try again.');
     }
 
     setShowChatMenu(null); // Close menu after delete
@@ -548,7 +518,7 @@ export default function Home() {
   // ✅ NEW: Update session title in backend database
   const updateSessionTitle = async (sessionId: string, newTitle: string): Promise<boolean> => {
     try {
-      console.log(`🏷️ Updating session ${sessionId} title to: ${newTitle}`);
+      console.log(`🏷️ [API] Updating session ${sessionId} title to: "${newTitle}"`);
       
       const response = await fetch(`http://localhost:8000/api/chat/sessions/${sessionId}/title`, {
         method: 'PUT',
@@ -560,17 +530,20 @@ export default function Home() {
         })
       });
 
+      console.log(`🏷️ [API] Response status: ${response.status}`);
+
       if (!response.ok) {
-        console.error(`Failed to update session title: ${response.status}`);
+        const errorText = await response.text();
+        console.error(`❌ Failed to update session title: ${response.status} - ${errorText}`);
         return false;
       }
 
       const result = await response.json();
-      console.log(`✅ Session title updated successfully: ${result.new_title}`);
+      console.log(`✅ [API] Session title updated successfully:`, result);
       return true;
       
     } catch (error) {
-      console.error('Error updating session title:', error);
+      console.error('❌ [API] Error updating session title:', error);
       return false;
     }
   };
@@ -970,20 +943,33 @@ export default function Home() {
       }
     }
 
-    // ✅ NEW: Auto-create chat session if none exists
-    // This handles the case when user opens the app and immediately starts typing
-    // without manually creating a new chat session first
+    // ✅ ENHANCED: Auto-create session and redirect - NO CHAT AT HOMEPAGE
+    // Homepage is only for landing, all chats happen at /chat/[sessionId]
     let currentSelectedChat = selectedChat;
     console.log('🔍 [DEBUG] Checking selectedChat:', currentSelectedChat);
+    console.log('🔍 [DEBUG] Current URL path should have session if chatting');
     
-    // If no session selected, create one automatically
+    // If no session selected AND we're not already in a session URL, create and redirect
     if (!currentSelectedChat) {
-      console.log('🆕 No session selected, creating new session...');
+      console.log('🆕 No session selected - creating new session and redirecting to session URL');
       try {
-        const newSessionId = await createNewChat();
+        // 💾 Save message to localStorage before redirect
+        const messageToSend = inputMessage.trim();
+        localStorage.setItem('pendingMessage', messageToSend);
+        console.log('💾 Saved pending message to localStorage:', messageToSend);
+        
+        const newSessionId = await createNewChat(false);  // Don't auto-redirect in createNewChat
         if (newSessionId) {
-          currentSelectedChat = newSessionId; // Use the returned session ID
+          currentSelectedChat = newSessionId;
           console.log(`✅ New session created: ${currentSelectedChat}`);
+          
+          // 🚀 IMMEDIATE REDIRECT TO SESSION URL - All chats must have session ID in URL
+          console.log(`🔄 Redirecting to /chat/${newSessionId} (Full URL-based session management)`);
+          router.push(`/chat/${newSessionId}`);
+          
+          // ⚠️ STOP MESSAGE PROCESSING - The redirect will handle the message
+          console.log('🛑 Stopping message processing - redirect in progress to session URL');
+          return;
         } else {
           console.error('❌ Failed to create session, aborting message send');
           alert('Failed to create chat session. Please try again.');
@@ -1104,9 +1090,13 @@ export default function Home() {
     console.log('📝 [DEBUG] Updating chat history with currentSelectedChat:', currentSelectedChat);
     console.log('📝 [DEBUG] chatWithBothMessages:', chatWithBothMessages);
     
-    // ✅ NEW: Check if this is the first message to update title
-    const isFirstMessage = currentChat.length === 0;
+    // ✅ FIXED: Check if this is the first message by checking ORIGINAL currentChat length BEFORE adding messages
+    const isFirstMessage = currentChat.length === 0; // Empty chat = first message
     let newTitle = '';
+    
+    console.log('📝 [DEBUG] First message detection:');
+    console.log('📝 [DEBUG] - Original currentChat.length:', currentChat.length);
+    console.log('📝 [DEBUG] - isFirstMessage:', isFirstMessage);
     
     // ✅ FIX: Use setChatHistory with function to get latest state
     setChatHistory(currentHistoryState => {
@@ -1115,8 +1105,11 @@ export default function Home() {
         items: group.items.map(chat => {
           if (chat.id === currentSelectedChat) {
             console.log('📝 [DEBUG] Found matching chat, updating:', chat.id);
+            console.log('📝 [DEBUG] Chat title before:', chat.title);
+            console.log('📝 [DEBUG] isFirstMessage:', isFirstMessage);
+            console.log('📝 [DEBUG] currentChat.length:', currentChat.length);
             
-            // ✅ NEW: Generate smart title for first message
+            // ✅ FIXED: Generate smart title for first message
             if (chat.title === 'New Conversation' && isFirstMessage) {
               newTitle = generateChatTitle(inputMessage.trim());
               console.log(`🏷️ [DEBUG] Generated new title: ${newTitle}`);
@@ -1318,12 +1311,42 @@ export default function Home() {
       setCurrentChat(finalChatMessages);
       console.log('Updated chat with final response'); // Debug log
 
-      // ✅ NEW: Update title in database if this was the first message
+      // ✅ AGGRESSIVE FIX: Update title in database if this was the first message
       if (isFirstMessage && newTitle && currentSelectedChat) {
-        console.log(`🏷️ [DEBUG] Updating title in database for first message: ${newTitle}`);
-        updateSessionTitle(currentSelectedChat, newTitle).catch(error => {
-          console.error('Failed to update session title in database:', error);
-        });
+        console.log(`🏷️ [DEBUG] Updating title in database for first message:`);
+        console.log(`🏷️ [DEBUG] - Session ID: ${currentSelectedChat}`);
+        console.log(`🏷️ [DEBUG] - New Title: ${newTitle}`);
+        console.log(`🏷️ [DEBUG] - currentChat.length was: ${currentChat.length}`);
+        
+        // ✅ IMMEDIATE: Update title without delay
+        updateSessionTitle(currentSelectedChat, newTitle)
+          .then(success => {
+            if (success) {
+              console.log(`🏷️ [SUCCESS] Title updated in database: ${newTitle}`);
+              
+              // ✅ FORCED UPDATE: Update local state immediately
+              setChatHistory(prevHistory => {
+                return prevHistory.map(group => ({
+                  ...group,
+                  items: group.items.map(chat => {
+                    if (chat.id === currentSelectedChat) {
+                      return { ...chat, title: newTitle };
+                    }
+                    return chat;
+                  })
+                }));
+              });
+              
+            } else {
+              console.error('❌ Failed to update title in database');
+            }
+          })
+          .catch(error => {
+            console.error('Failed to update session title in database:', error);
+          });
+        
+      } else {
+        console.log(`🏷️ [DEBUG] NOT updating title - isFirstMessage: ${isFirstMessage}, newTitle: "${newTitle}", currentSelectedChat: ${currentSelectedChat}`);
       }
 
       // Update chat history with final response using setState function
@@ -1584,12 +1607,12 @@ export default function Home() {
   };
 
   // 💾 LOAD CHAT HISTORY FROM DATABASE
-  const loadChatHistory = async () => {
+  const loadChatHistory = async (preserveSessionId?:  string) => {
     try {
       console.log('Loading chat sessions from database...');
       
       // First, get all sessions
-      const sessionsResponse = await fetch('http://localhost:8000/api/chat/sessions');
+      const sessionsResponse = await fetch('http://localhost:8000/api/chat/sessions/optimized');
       if (!sessionsResponse.ok) {
         throw new Error('Failed to load chat sessions');
       }
@@ -1600,52 +1623,60 @@ export default function Home() {
       if (sessionsData.success && sessionsData.sessions && sessionsData.sessions.length > 0) {
         const chatGroups: ChatGroup[] = [];
         
-        // Load messages for each session
+        // Load messages for each session (INCLUDING empty sessions)
         for (const sessionData of sessionsData.sessions) {
           try {
+            // ✅ FIXED: Always create session, even if no messages
+            let messages: Message[] = [];
+            
+            // Try to load messages, but don't skip session if no messages exist
             const historyResponse = await fetch(`http://localhost:8000/api/chat/history/${sessionData.id}`);
             if (historyResponse.ok) {
               const historyData = await historyResponse.json();
               
               if (historyData.success && historyData.chat_history && historyData.chat_history.length > 0) {
                 // Convert database messages to frontend format
-                const messages: Message[] = historyData.chat_history.map((dbMessage: any) => ({
+                messages = historyData.chat_history.map((dbMessage: any) => ({
                   id: dbMessage.id,
                   sender: dbMessage.message_type === 'user' ? 'user' : 'bot',
                   content: dbMessage.content,
                   timestamp: new Date(dbMessage.timestamp)
                 }));
-                
-                // Create chat session
-                const chatSession: ChatSession = {
-                  id: sessionData.id,
-                  title: sessionData.title,
-                  messages: messages,
-                  createdAt: new Date(sessionData.created_at),
-                  timestamp: new Date(sessionData.last_message_time || sessionData.created_at),
-                  isActive: false,
-                  documentContext: {
-                    selectedDocuments: [],
-                    activeDocument: null,
-                    documentSettings: {}
-                  }
-                };
-                
-                // Group by month
-                const sessionDate = new Date(sessionData.created_at);
-                const monthYear = sessionDate.toLocaleDateString('en-US', { 
-                  month: 'long', 
-                  year: 'numeric' 
-                });
-                
-                let group = chatGroups.find(g => g.date === monthYear);
-                if (!group) {
-                  group = { date: monthYear, items: [] };
-                  chatGroups.push(group);
-                }
-                group.items.push(chatSession);
               }
             }
+
+            // ✅ FIXED: Create chat session regardless of message count
+            const chatSession: ChatSession = {
+              id: sessionData.id,
+              title: sessionData.title,
+              messages: messages, // Could be empty array
+              createdAt: new Date(sessionData.created_at),
+              timestamp: new Date(sessionData.last_message_time || sessionData.created_at),
+              isActive: false,
+              documentContext: {
+                selectedDocuments: [],
+                activeDocument: null,
+                documentSettings: {}
+              }
+            };
+            
+            console.log(`📝 [LOAD] Session loaded: ${sessionData.title} (${messages.length} messages)`);
+            
+            // Group by month
+            const sessionDate = new Date(sessionData.created_at);
+            const monthYear = sessionDate.toLocaleDateString('en-US', { 
+              month: 'long', 
+              year: 'numeric' 
+            });
+            
+            let group = chatGroups.find(g => g.date === monthYear);
+            if (!group) {
+              group = { date: monthYear, items: [] };
+              chatGroups.push(group);
+            }
+            
+            group.items.push(chatSession);
+            
           } catch (error) {
             console.error(`Error loading session ${sessionData.id}:`, error);
           }
@@ -1658,11 +1689,19 @@ export default function Home() {
         
         setChatHistory(chatGroups);
         
-        // Set the most recent session as active if no current chat
-        if (chatGroups.length > 0 && chatGroups[0].items.length > 0 && !selectedChat) {
+        // ✅ CRITICAL FIX: NEVER auto-select session if there's already an active selection
+        // This prevents overriding user's session choice or URL-based session
+        const currentlySelectedSession = preserveSessionId || selectedChat;
+        
+        if (!currentlySelectedSession && chatGroups.length > 0 && chatGroups[0].items.length > 0) {
+          // Only auto-select if absolutely no session is selected
           const mostRecentSession = chatGroups[0].items[0];
+          console.log('🔄 [AUTO-SELECT] No session selected, setting most recent as active:', mostRecentSession.id);
           setSelectedChat(mostRecentSession.id);
           setCurrentChat(mostRecentSession.messages);
+        } else {
+          console.log('🎯 [PRESERVE] Session already selected, preserving:', currentlySelectedSession);
+          // NEVER override existing selection
         }
         
         console.log('Chat history restored successfully');
@@ -1838,13 +1877,26 @@ export default function Home() {
         throw new Error('Failed to delete document');
       }
       
-      // Reload library
-      await loadDocumentLibrary();
+      // ✅ COMPREHENSIVE STATE CLEANUP setelah delete sukses
       
-      // Clear current document if it was the deleted one
+      // 1. Clear current document if it was the deleted one
       if (currentDocument?.id === documentId) {
         setCurrentDocument(null);
       }
+      
+      // 2. Remove from selectedDocuments if present
+      setSelectedDocuments(prev => prev.filter(id => id !== documentId));
+      
+      // 3. Clear dari documentLibrary state dan active_document
+      setDocumentLibrary(prev => ({
+        ...prev,
+        documents: prev.documents.filter(doc => doc.document_id !== documentId),
+        total_count: Math.max(0, prev.total_count - 1),
+        active_document: prev.active_document?.document_id === documentId ? null : prev.active_document
+      }));
+      
+      // 4. Reload library untuk sinkronisasi dengan backend
+      await loadDocumentLibrary();
       
       alert(`🗑️ Document "${filename}" deleted successfully!`);
       
@@ -1930,10 +1982,124 @@ export default function Home() {
   };
 
   // Load document library on component mount
+  // ✅ DEBUG HELPER: Expose debug functions to window for testing
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__DEBUG = {
+        loadChatHistory: () => loadChatHistory(),
+        createNewSession: (title: string = 'Test Session') => createNewSession(title),
+        updateSessionTitle: (sessionId: string, title: string) => updateSessionTitle(sessionId, title),
+        currentState: {
+          chatHistory: chatHistory,
+          selectedChat: selectedChat,
+          currentChat: currentChat
+        }
+      };
+      console.log('🐛 [DEBUG] Debug functions available at window.__DEBUG');
+    }
+  }, [chatHistory, selectedChat, currentChat]);
+
   useEffect(() => {
     loadDocumentLibrary();
     loadChatHistory(); // Load chat history from database
   }, []);
+
+  // ✅ CRITICAL FIX: Update selectedChat immediately when initialSessionId changes
+  useEffect(() => {
+    if (initialSessionId && initialSessionId !== selectedChat) {
+      console.log('🔄 [IMMEDIATE] Updating selectedChat due to initialSessionId change:', initialSessionId);
+      setSelectedChat(initialSessionId);
+      // IMMEDIATELY clear current chat to prevent showing old messages
+      setCurrentChat([]);
+    }
+  }, [initialSessionId, selectedChat]);
+
+  // ✅ FIXED: Handle initialSessionId from URL parameter with proper session switching
+  useEffect(() => {
+    const loadSpecificSession = async (sessionId: string) => {
+      try {
+        console.log('🔗 [SESSION] Loading specific session from URL:', sessionId);
+        
+        // 1. IMMEDIATELY clear current chat and set selected session to prevent race condition
+        console.log('🧹 [CLEAR] Clearing current chat before loading new session');
+        setCurrentChat([]);
+        setSelectedChat(sessionId);
+        
+        // 2. Load chat history for this specific session
+        console.log('📡 [API] Fetching session history for:', sessionId);
+        const historyResponse = await fetch(`http://localhost:8000/api/chat/history/${sessionId}`);
+        
+        if (historyResponse.ok) {
+          const historyData = await historyResponse.json();
+          
+          if (historyData.success && historyData.chat_history) {
+            // Convert database messages to frontend format
+            const messages: Message[] = historyData.chat_history.map((dbMessage: any) => ({
+              id: dbMessage.id,
+              sender: dbMessage.message_type === 'user' ? 'user' : 'bot',
+              content: dbMessage.content,
+              timestamp: new Date(dbMessage.timestamp)
+            }));
+            
+            console.log('✅ [SESSION] Loaded session messages:', messages.length);
+            // FORCE set current chat - this should be the final state
+            setCurrentChat(messages);
+            
+            // Double-check that selectedChat is still correct
+            if (selectedChat !== sessionId) {
+              console.log('🔧 [FORCE] Forcing selectedChat to match sessionId:', sessionId);
+              setSelectedChat(sessionId);
+            }
+            
+          } else {
+            console.log('📭 [SESSION] No messages found for session:', sessionId);
+            setCurrentChat([]);
+          }
+        } else {
+          console.error('❌ [SESSION] Failed to load session:', historyResponse.status);
+          setCurrentChat([]);
+        }
+        
+        // 4. Handle pending message after session is loaded
+        const pendingMessage = localStorage.getItem('pendingMessage');
+        if (pendingMessage && !isAutoSending) {
+          console.log('📝 [RESTORE] Found pending message:', pendingMessage);
+          setInputMessage(pendingMessage);
+          localStorage.removeItem('pendingMessage');
+          setIsAutoSending(true);
+          
+          // Auto-send after session is fully loaded
+          setTimeout(() => {
+            console.log('🚀 [AUTO-SEND] Sending restored message');
+            handleSendMessage().finally(() => setIsAutoSending(false));
+          }, 1000);
+        }
+        
+      } catch (error) {
+        console.error('❌ [SESSION] Error loading session:', error);
+        setCurrentChat([]);
+      }
+    };
+
+    if (initialSessionId) {
+      console.log('🎯 [START] Starting session load for:', initialSessionId);
+      loadSpecificSession(initialSessionId);
+    } else {
+      // No initial session - clear current chat
+      console.log('🆕 [SESSION] No initial session, clearing current chat');
+      setCurrentChat([]);
+      setSelectedChat('');
+    }
+  }, [initialSessionId]); // This will re-run when initialSessionId changes
+
+  // ✅ DISABLED: Refresh sidebar when selectedChat changes to prevent interference
+  // useEffect(() => {
+  //   if (selectedChat) {
+  //     console.log('🔄 [SIDEBAR] Refreshing sidebar for selected session:', selectedChat);
+  //     // Refresh sidebar without auto-selecting any session
+  //     loadChatHistory(selectedChat);
+  //   }
+  // }, [selectedChat]);
 
   // Debug effect to track currentChat changes
   useEffect(() => {
@@ -2063,7 +2229,7 @@ export default function Home() {
           className={`flex items-center gap-2 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-lg p-3 mb-4 w-full hover:from-blue-700 hover:to-blue-600 transition-all duration-200 shadow-sm ${
             isSidebarCollapsed ? 'justify-center' : ''
           }`}
-          onClick={createNewChat}
+          onClick={() => createNewChat()}
         >
           <ChatBubbleLeftIcon className="w-5 h-5 flex-shrink-0" />
           {!isSidebarCollapsed && <span>New chat</span>}

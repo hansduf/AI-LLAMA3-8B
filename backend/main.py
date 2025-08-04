@@ -123,6 +123,14 @@ class DocumentResponse(BaseModel):
     content: str
     filename: str
 
+class SessionTitleUpdateRequest(BaseModel):
+    """🔄 Request model for updating session title"""
+    title: str
+
+class SessionCreateRequest(BaseModel):
+    """🔄 Request model for creating new session"""
+    title: str = "New Chat"
+
 # Simplified Document Processing for Library System
 class SimpleDocumentProcessor:
     """Simplified document processing for active document selection"""
@@ -1791,23 +1799,30 @@ async def delete_document_from_library(document_id: str):
         # Get document info before deletion
         doc = document_library.get_document(document_id)
         if not doc:
+            logger.warning(f"❌ Document {document_id} not found")
             raise HTTPException(status_code=404, detail="Document not found")
+        
+        logger.info(f"🗑️ API request to delete document: {doc.original_filename}")
         
         success = document_library.delete_document(document_id)
         
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to delete document")
+            logger.error(f"❌ Backend failed to delete document: {doc.original_filename}")
+            raise HTTPException(status_code=500, detail="Failed to delete document from backend")
+        
+        logger.info(f"✅ API successfully deleted document: {doc.original_filename}")
         
         return {
             "success": True,
             "message": f"Document '{doc.original_filename}' deleted successfully",
-            "deleted_document_id": document_id
+            "deleted_document_id": document_id,
+            "deleted_filename": doc.original_filename
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting document: {e}")
+        logger.error(f"❌ Unexpected error deleting document: {e}")
         raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
 
 @app.post("/api/documents/clear-selection")
@@ -2340,11 +2355,11 @@ async def clear_chat_history():
 # ═══════════════════════════════════════════════════════════════
 
 @app.post("/api/chat/sessions")
-async def create_chat_session(request: dict):
+async def create_chat_session(request: SessionCreateRequest):
     """Create new chat session"""
     try:
-        title = request.get("title", "New Chat")
-        metadata = request.get("metadata", {})
+        title = request.title.strip() if request.title else "New Chat"
+        metadata = {}  # Can add metadata parameter to model if needed
         
         logger.info(f"Creating chat session with title: {title}")
         session_id = db_service.create_new_session(title=title, metadata=metadata)
@@ -2364,10 +2379,10 @@ async def create_chat_session(request: dict):
         raise HTTPException(status_code=500, detail=f"Error creating chat session: {str(e)}")
 
 @app.put("/api/chat/sessions/{session_id}/title")
-async def update_session_title(session_id: str, request: dict):
+async def update_session_title(session_id: str, request: SessionTitleUpdateRequest):
     """Update chat session title"""
     try:
-        new_title = request.get("title", "").strip()
+        new_title = request.title.strip()
         if not new_title:
             raise HTTPException(status_code=400, detail="Title cannot be empty")
         
@@ -2393,6 +2408,49 @@ async def update_session_title(session_id: str, request: dict):
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error updating session title: {str(e)}")
 
+@app.get("/api/chat/sessions/optimized")
+async def get_chat_sessions_optimized():
+    """
+    🚀 OPTIMIZED: Get all sessions with last message preview in single query
+    Eliminates N+1 problem for instant loading
+    """
+    try:
+        sessions = db_service.get_chat_sessions_optimized()
+        
+        return {
+            "success": True,
+            "sessions": sessions,
+            "total_sessions": len(sessions),
+            "message": f"Retrieved {len(sessions)} sessions with preview in single query"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting optimized sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting optimized sessions: {str(e)}")
+
+@app.get("/api/chat/sessions/{session_id}")
+async def get_session_by_id(session_id: str):
+    """Get specific chat session by ID for validation"""
+    try:
+        # Check if session exists in database
+        sessions = db_service.get_all_sessions()
+        session = next((s for s in sessions if s['id'] == session_id), None)
+        
+        if session:
+            return {
+                "success": True,
+                "session": session,
+                "message": "Session found"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session by ID: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting session: {str(e)}")
+
 @app.get("/api/chat/sessions")
 async def get_chat_sessions(limit: int = 50):
     """Get all chat sessions"""
@@ -2409,6 +2467,27 @@ async def get_chat_sessions(limit: int = 50):
     except Exception as e:
         logger.error(f"Error getting chat sessions: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting chat sessions: {str(e)}")
+
+@app.delete("/api/chat/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete specific chat session and all its messages"""
+    try:
+        success = db_service.delete_session(session_id)
+        
+        if success:
+            return {
+                "success": True,
+                "session_id": session_id,
+                "message": "Session deleted successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting session: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting session: {str(e)}")
 
 @app.get("/api/chat/history/{session_id}")
 async def get_session_history(session_id: str, limit: int = 50):

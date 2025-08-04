@@ -12,16 +12,6 @@ __all__ = [
     'engine', 
     'SessionLocal',
     'Document',
-    'DocumentChunk',
-    'DocumentEmbedding',
-    'ChatSession',
-    'ChatMessage',
-    'ParsedTable',
-    'ResponseFormatting',
-    'PerformanceLog',
-    'MultiDocumentAnalysis',
-    'MultiDocumentResult',
-    'ModelConfiguration',
-    'ResponseCache',
-    'SystemMetric'
+    'ChatSession', 
+    'ChatMessage'
 ]

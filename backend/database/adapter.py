@@ -230,9 +230,12 @@ class DocumentLibrary:
             # Get document info first
             doc = self.get_document(document_id)
             if not doc:
+                logger.warning(f"❌ Document {document_id} not found in database")
                 return False
             
-            # Delete from database
+            logger.info(f"🗑️ Starting delete process for: {doc.original_filename}")
+            
+            # Delete from database first
             success = db_service.delete_document(document_id)
             
             if success:
@@ -240,15 +243,18 @@ class DocumentLibrary:
                 file_path = os.path.join(self.upload_folder, doc.filename)
                 if os.path.exists(file_path):
                     os.remove(file_path)
-                    logger.info(f"🗑️ Deleted file: {file_path}")
+                    logger.info(f"🗑️ Deleted physical file: {file_path}")
+                else:
+                    logger.warning(f"⚠️ Physical file not found: {file_path}")
                 
-                logger.info(f"✅ Deleted document: {doc.original_filename}")
+                logger.info(f"✅ Successfully deleted document: {doc.original_filename}")
                 return True
-            
-            return False
+            else:
+                logger.error(f"❌ Failed to delete document from database: {doc.original_filename}")
+                return False
             
         except Exception as e:
-            logger.error(f"Error deleting document: {e}")
+            logger.error(f"❌ Error during delete process: {e}")
             return False
 
 # Export for backward compatibility
