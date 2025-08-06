@@ -49,8 +49,9 @@ import time
 import hashlib
 import traceback  # For detailed error logging
 import json
+import asyncio  # For async timeout operations
 import docx2txt  # For basic DOCX processing
-import PyPDF4   # For PDF processing
+import PyPDF2   # For PDF processing
 import base64
 import io
 import re  # Add missing re import
@@ -182,31 +183,36 @@ class SimplePromptEngineer:
     """Simplified prompt engineering for document and general chat"""
     
     def create_document_prompt(self, query: str, context: str, conversation_history: List[Dict] = None) -> str:
-        """Create speed-optimized document analysis prompt"""
+        """Create relevance-focused document analysis prompt"""
         
         conversation_context = ""
         if conversation_history:
-            last_exchanges = conversation_history[-1:] if conversation_history else []  # REDUCED: Only last 1 exchange for speed
+            last_exchanges = conversation_history[-1:] if conversation_history else []
             for msg in last_exchanges:
                 conversation_context += f"{msg.get('sender', 'User')}: {msg.get('content', '')[:100]}...\n"
         
-        # SPEED-OPTIMIZED prompt with clear instructions for fast response
-        prompt = f"""INSTRUKSI FORMAT JAWABAN:
-Berikan jawaban informatif dengan promt yang di minta oleh user dan format markdown:
-- Gunakan ## untuk judul utama
-- **Bold** untuk poin penting (minimal 3-5 bold)
-- - untuk daftar (gunakan banyak list)
-- jawab dengan kompleks dan komperhesif
-- JANGAN menulis pembukaan panjang
+        # Enhanced prompt dengan fokus relevansi yang lebih baik
+        prompt = f"""INSTRUKSI PENTING - FOKUS PADA RELEVANSI:
+1. BACA PERTANYAAN USER dengan teliti: "{query}"
+2. CARI informasi yang BENAR-BENAR RELEVAN dengan kata kunci utama dalam pertanyaan
+3. Jika dokumen tidak memiliki informasi yang relevan, katakan dengan jujur
+4. Jangan memberikan jawaban yang tidak sesuai dengan permintaan
 
-DOKUMEN:
+DOKUMEN REFERENSI:
 {context}
 
-RIWAYAT: {conversation_context}
+RIWAYAT PERCAKAPAN: {conversation_context}
 
-PERTANYAAN: {query}
+PERTANYAAN USER: {query}
 
-JAWABAN LANGSUNG:"""
+INSTRUKSI FORMAT JAWABAN:
+- Gunakan ## untuk judul yang SESUAI dengan pertanyaan
+- **Bold** untuk informasi penting yang relevan
+- Berikan daftar dengan - jika ada multiple informasi
+- Jawab HANYA berdasarkan dokumen yang relevan
+- Jika tidak ada informasi yang relevan, jelaskan apa yang tersedia
+
+JAWABAN YANG RELEVAN:"""
         
         return prompt
     
@@ -725,30 +731,116 @@ async def chat_with_llama(request: ChatRequest):
         # Enhanced prompt engineering with conversation history and active document
         prompt_start = time.time()
         
-        # Check for active document if no context provided
+        # 🚀 PRIORITAS UTAMA: SELALU gunakan vector search untuk mencari dari semua dokumen
         final_context = request.context
         active_doc_info = ""
         
-        # CRITICAL DEBUG: Log current active document
-        current_active = document_library.get_active_document()
-        if current_active:
-            logger.info(f"🔍 [DEBUG] Current active document: {current_active.original_filename} (ID: {current_active.document_id})")
-        else:
-            logger.info("🔍 [DEBUG] No active document currently set")
+        logger.info(f"🔍 [VECTOR PRIORITY] Starting vector search for: {request.message[:100]}...")
         
+        # PRIORITAS 1: Vector search dari semua dokumen yang sudah diupload
+        # PRIORITAS 1: Vector search dari semua dokumen yang sudah diupload
+        try:
+            logger.info(f"🔍 [VECTOR] Starting vector search for query: {request.message[:100]}...")
+            logger.info(f"⏰ [VECTOR] Using 25-minute timeout for vector operations")
+            
+            # Enhanced query analysis untuk better search
+            search_query = request.message.lower()
+            
+            # Extract key terms and expand search if needed
+            key_terms = []
+            if "paiton" in search_query:
+                key_terms.extend(["paiton", "power plant", "PLN", "pembangkit listrik"])
+            elif "tugas" in search_query:
+                key_terms.extend(["tugas", "assignment", "praktikum", "kuliah"])
+            
+            # Use enhanced query for embedding if key terms found
+            enhanced_query = request.message
+            if key_terms:
+                enhanced_query = f"{request.message} {' '.join(key_terms)}"
+                logger.info(f"🔍 [ENHANCED] Query expanded with terms: {key_terms}")
+            
+            from vector.search import vector_search
+            from vector.embeddings import embedding_generator
+            from database.connection import SessionLocal
+            
+            # Generate embedding untuk enhanced query dengan timeout
+            embedding_result = await asyncio.wait_for(
+                embedding_generator.generate_query_embedding(enhanced_query),
+                timeout=1500.0  # 25 minutes timeout
+            )
+            
+            if embedding_result.success and embedding_result.embedding:
+                logger.info(f"✅ [VECTOR] Query embedding generated: {len(embedding_result.embedding)}D")
+                
+                # Search untuk relevant document chunks
+                with SessionLocal() as session:
+                    search_results = vector_search.search_similar_chunks(
+                        query_embedding=embedding_result.embedding,
+                        session=session,
+                        limit=5  # Top 5 relevant chunks
+                    )
+                
+                if search_results:
+                    # Filter results by similarity score untuk better relevance
+                    high_similarity_results = [r for r in search_results if r.similarity_score >= 0.6]
+                    medium_similarity_results = [r for r in search_results if 0.4 <= r.similarity_score < 0.6]
+                    
+                    # Use high similarity first, fallback to medium if none found
+                    filtered_results = high_similarity_results if high_similarity_results else medium_similarity_results[:3]
+                    
+                    if filtered_results:
+                        # Combine relevant chunks sebagai context
+                        chunk_contexts = []
+                        referenced_docs = set()
+                        
+                        for result in filtered_results:
+                            chunk_contexts.append(f"[{result.document_name}] {result.content}")
+                            referenced_docs.add(result.document_name)
+                        
+                        final_context = "\n\n".join(chunk_contexts)
+                        
+                        # Better info about source relevance
+                        relevance_info = "HIGH" if high_similarity_results else "MEDIUM"
+                        active_doc_info = f"🔍 Vector search ({relevance_info} relevance): {len(filtered_results)} chunks dari {len(referenced_docs)} dokumen: {', '.join(list(referenced_docs)[:3])}"
+                        
+                        logger.info(f"✅ [VECTOR SUCCESS] Found {len(filtered_results)} relevant chunks ({relevance_info} similarity) dari {len(referenced_docs)} dokumen")
+                        logger.info(f"📄 Documents: {', '.join(list(referenced_docs))}")
+                        logger.info(f"📊 Similarity scores: {[f'{r.similarity_score:.3f}' for r in filtered_results]}")
+                    else:
+                        logger.info("📭 [VECTOR] No high-relevance results found")
+                else:
+                    logger.info("📭 [VECTOR] No relevant documents found in vector search")
+            else:
+                logger.warning("⚠️ [VECTOR] Failed to generate query embedding")
+                
+        except Exception as e:
+            logger.error(f"❌ [VECTOR] Vector search failed: {e}")
+            logger.error(f"❌ [VECTOR] Traceback: {traceback.format_exc()}")
+        
+        # FALLBACK: Jika vector search gagal, baru gunakan active document (TIDAK DIREKOMENDASIKAN)
         if not final_context:
-            # Check for active document in library
+            logger.warning("⚠️ [FALLBACK] Vector search gagal, mencoba active document...")
             active_doc = document_library.get_active_document()
             if active_doc:
-                # Load content from active document
                 file_path = os.path.join(UPLOAD_FOLDER, active_doc.filename)
                 if os.path.exists(file_path):
                     try:
                         final_context = await extract_text_from_document(file_path)
-                        active_doc_info = f"📄 Using active document: {active_doc.original_filename}"
-                        logger.info(f"Using active document: {active_doc.original_filename}")
+                        active_doc_info = f"📄 FALLBACK - Using active document: {active_doc.original_filename}"
+                        logger.warning(f"⚠️ [FALLBACK] Using active document: {active_doc.original_filename}")
                     except Exception as e:
-                        logger.warning(f"Failed to load active document: {e}")
+                        logger.error(f"❌ [FALLBACK] Failed to load active document: {e}")
+        
+        # Log final context source
+        if final_context:
+            if "Vector search" in active_doc_info:
+                logger.info(f"✅ [CONTEXT] Using VECTOR SEARCH results: {len(final_context)} chars")
+            else:
+                logger.warning(f"⚠️ [CONTEXT] Using FALLBACK active document: {len(final_context)} chars")
+        else:
+            logger.info("📝 [CONTEXT] No document context - using general conversation")
+            
+        # Continue with existing logic...
         
         if final_context:
             # SPEED: Limit document context size aggressively for fast responses
@@ -1346,6 +1438,19 @@ async def extract_text_from_document(file_path: str) -> str:
             return await extract_text_from_pdf_advanced(file_path)
         elif file_extension == '.docx' or (file_type and 'wordprocessingml' in file_type):
             return await extract_text_from_docx_advanced(file_path)
+        elif file_extension == '.txt' or (file_type and 'text/plain' in file_type):
+            # Support for TXT files
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                logger.info(f"✅ TXT file extracted: {len(content)} characters")
+                return content
+            except UnicodeDecodeError:
+                # Try with different encoding
+                with open(file_path, 'r', encoding='latin-1') as f:
+                    content = f.read()
+                logger.info(f"✅ TXT file extracted (latin-1): {len(content)} characters")
+                return content
         else:
             logger.error(f"Format file tidak didukung: {file_extension}")
             return f"Format file tidak didukung: {file_extension}"
@@ -1487,9 +1592,9 @@ async def extract_text_from_pdf_advanced(file_path: str) -> str:
         
     except Exception as e:
         logger.error(f"Error dalam ekstraksi PDF advanced: {e}")
-        # Fallback ke PyPDF4
+        # Fallback ke PyPDF2
         try:
-            logger.info("Falling back to PyPDF4 extraction...")
+            logger.info("Falling back to PyPDF2 extraction...")
             return extract_text_from_pdf(file_path)
         except Exception as fallback_error:
             logger.error(f"Fallback PDF juga gagal: {fallback_error}")
@@ -1500,11 +1605,11 @@ def extract_text_from_pdf(file_path: str) -> str:
     text = ""
     try:
         with open(file_path, 'rb') as file:
-            # Menggunakan PyPDF4 yang pure Python
-            pdf_reader = PyPDF4.PdfFileReader(file)
-            for page_num in range(pdf_reader.getNumPages()):
-                page = pdf_reader.getPage(page_num)
-                text += page.extractText() + "\n"
+            # Menggunakan PyPDF2 yang pure Python
+            pdf_reader = PyPDF2.PdfReader(file)
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                text += page.extract_text() + "\n"
         return text
     except Exception as e:
         logger.error(f"Error saat mengekstrak teks dari PDF: {e}")
@@ -1625,10 +1730,23 @@ async def upload_document(file: UploadFile = File(...)):
             file_type=file_extension,
             content_preview=full_content[:200],  # First 200 chars as preview
             analysis_summary={},  # Empty summary for now
-            is_active=True  # Set as active document
+            is_active=False  # Don't auto-set as active - let user choose via vector search
         )
         
         document_library.add_document(document_metadata)
+        
+        # 🚀 CRITICAL: Add background processing for vector embeddings
+        try:
+            from vector.background import background_processor
+            await background_processor.queue_document_for_processing(
+                document_id=document_id,
+                filename=file.filename
+            )
+            logger.info(f"📤 Document queued for background processing: {document_id}")
+            embedding_status = "queued_for_processing"
+        except Exception as bg_error:
+            logger.warning(f"⚠️ Background processing failed: {bg_error}")
+            embedding_status = "processing_failed"
         
         # CRITICAL: Clear cache when uploading new document to prevent old context
         response_cache.clear()
@@ -1639,6 +1757,8 @@ async def upload_document(file: UploadFile = File(...)):
             "document_id": document_id,
             "content": full_content,
             "filename": file.filename,
+            "embedding_status": embedding_status,  # Show processing status
+            "vector_processing": "Document queued for automatic chunking and embedding",
             "chat_notification": {
                 "type": "document_upload",
                 "message": f"📄 **Document uploaded:** {file.filename}",
@@ -1647,7 +1767,8 @@ async def upload_document(file: UploadFile = File(...)):
                     "filename": file.filename,
                     "file_type": file_extension,
                     "file_size": os.path.getsize(file_path),
-                    "upload_date": datetime.now().isoformat()
+                    "upload_date": datetime.now().isoformat(),
+                    "processing_status": embedding_status
                 },
                 "analysis_summary": analysis_info,
                 "timestamp": datetime.now().isoformat()
@@ -2529,7 +2650,176 @@ async def get_chat_sessions():
         raise HTTPException(status_code=500, detail=f"Error getting chat sessions: {str(e)}")
 
 # ═══════════════════════════════════════════════════════════════
-# �🚀 SERVER STARTUP SECTION - ENTRY POINT
+# 🔧 VECTOR SEARCH INTEGRATION
+# ═══════════════════════════════════════════════════════════════
+
+# Simple vector upload endpoint directly in main.py
+@app.post("/api/vector/upload")
+async def upload_document_vector(file: UploadFile = File(...)):
+    """
+    🚀 VECTOR DOCUMENT UPLOAD - MASS UPLOAD FEATURE
+    Simple implementation untuk mass document upload yang diminta user
+    """
+    try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+        
+        logger.info(f"📄 Vector upload started: {file.filename}")
+        
+        # Read file content
+        content = await file.read()
+        
+        # Extract text content (basic implementation)
+        text_content = ""
+        file_extension = file.filename.lower().split('.')[-1]
+        
+        # Import io at the top for all file types
+        import io
+        
+        if file_extension == 'pdf':
+            try:
+                import PyPDF2
+                reader = PyPDF2.PdfReader(io.BytesIO(content))
+                text_content = ""
+                for page in reader.pages:
+                    text_content += page.extract_text() + "\n"
+            except Exception as e:
+                logger.error(f"PDF extraction error: {e}")
+                text_content = f"Error extracting PDF: {str(e)}"
+                
+        elif file_extension in ['docx', 'doc']:
+            try:
+                import docx2txt
+                text_content = docx2txt.process(io.BytesIO(content))
+            except Exception as e:
+                logger.error(f"DOCX extraction error: {e}")
+                text_content = f"Error extracting DOCX: {str(e)}"
+                
+        elif file_extension == 'txt':
+            text_content = content.decode('utf-8', errors='ignore')
+        else:
+            text_content = f"Unsupported file type: {file_extension}"
+        
+        if not text_content or len(text_content.strip()) < 10:
+            raise HTTPException(status_code=400, detail="Could not extract meaningful text from file")
+        
+        # Save file to uploads directory
+        document_id = str(uuid.uuid4())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = f"{timestamp}_{file.filename}"
+        file_path = os.path.join("uploads", safe_filename)
+        
+        # Create uploads directory if it doesn't exist
+        os.makedirs("uploads", exist_ok=True)
+        
+        # Save file content
+        with open(file_path, "wb") as f:
+            f.write(content)
+        
+        # Save to database using existing document library
+        try:
+            # Simplify file_type to avoid database length issues
+            simple_file_type = f".{file_extension}"  # Use simple extension like .pdf, .docx
+            
+            document_metadata = DocumentMetadata(
+                document_id=document_id,
+                filename=safe_filename,
+                original_filename=file.filename,
+                upload_date=datetime.now().isoformat(),
+                file_size=len(content),
+                file_type=simple_file_type,  # Use simple extension instead of MIME type
+                content_preview=text_content[:500],
+                analysis_summary={
+                    "file_size": len(content),
+                    "text_length": len(text_content),
+                    "upload_method": "vector_mass_upload"
+                },
+                is_active=True
+            )
+            
+            # Add to document library with correct signature
+            document_library.add_document(document_metadata)
+            logger.info(f"📄 Document saved to database: {document_id}")
+            
+            # Queue for background embedding (if available)
+            try:
+                from vector.background import background_processor
+                await background_processor.queue_document_for_processing(
+                    document_id=document_id,
+                    filename=file.filename
+                )
+                logger.info(f"📤 Document queued for embedding: {document_id}")
+                embedding_status = "queued"
+            except Exception as e:
+                logger.warning(f"⚠️ Background embedding not available: {e}")
+                embedding_status = "pending"
+            
+        except Exception as e:
+            logger.error(f"❌ Database save failed: {e}")
+            # Clean up file if database save fails
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(status_code=500, detail=f"Failed to save document: {str(e)}")
+        
+        return {
+            "status": "success",
+            "message": "Document uploaded and saved successfully",
+            "document_id": document_id,
+            "filename": file.filename,
+            "file_size": len(content),
+            "text_length": len(text_content),
+            "text_preview": text_content[:200] + "..." if len(text_content) > 200 else text_content,
+            "embedding_status": embedding_status,
+            "vector_processing": "Document saved to database, embedding in progress"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Vector upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+# Import vector API router
+try:
+    from api.vector_endpoints import vector_api_router
+    
+    # Register vector endpoints
+    vector_api_router.register_endpoints(app)
+    logger.info("✅ Vector search endpoints registered successfully")
+    
+except Exception as e:
+    logger.warning(f"⚠️ Vector search integration failed: {e}")
+    logger.warning("Vector search functionality will not be available - using direct endpoint")
+
+# 🚀 STARTUP AND SHUTDOWN EVENTS
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background services on startup"""
+    try:
+        logger.info("🚀 Starting background services...")
+        
+        # Start background embedding processor
+        from vector.background import background_processor
+        await background_processor.start_background_worker()
+        logger.info("✅ Background embedding processor started")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to start background services: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup background services on shutdown"""
+    try:
+        logger.info("⏹️ Stopping background services...")
+        
+        # Stop background embedding processor
+        from vector.background import background_processor
+        await background_processor.stop_background_worker()
+        logger.info("✅ Background services stopped")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to stop background services: {e}")
+
+# ═══════════════════════════════════════════════════════════════
+# 🚀 SERVER STARTUP SECTION - ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":

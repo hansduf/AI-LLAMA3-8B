@@ -1,0 +1,25 @@
+Modul Praktikum API - Testing Document
+    
+Ini adalah dokumen praktikum tentang API development. Dokumen ini berisi:
+
+1. Pengenalan REST API
+   - HTTP Methods (GET, POST, PUT, DELETE)
+   - Status codes dan response handling
+   - JSON data format
+
+2. Implementasi Backend
+   - FastAPI framework untuk Python
+   - Database integration dengan PostgreSQL
+   - Authentication dan authorization
+
+3. Frontend Integration
+   - React.js untuk user interface
+   - Axios untuk HTTP client
+   - State management dengan hooks
+
+4. Testing dan Deployment
+   - Unit testing dengan pytest
+   - API documentation dengan Swagger
+   - Docker containerization
+
+Tugas 13: Implementasi complete API endpoint untuk document management dengan vector search capability.

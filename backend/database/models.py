@@ -32,7 +32,7 @@ class Document(Base):
     original_filename = Column(String(255), nullable=False, index=True)
     file_path = Column(String(500), nullable=False)
     file_size = Column(BigInteger, nullable=False, index=True)
-    file_type = Column(String(10), nullable=False, index=True)
+    file_type = Column(String(100), nullable=False, index=True)  # Increased from 10 to 100 for MIME types
     
     # Status and timestamps
     upload_date = Column(DateTime, nullable=False, index=True)

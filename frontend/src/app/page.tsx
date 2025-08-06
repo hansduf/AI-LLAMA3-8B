@@ -38,6 +38,7 @@
 import {
   ArrowPathIcon,
   Bars3Icon,
+  BookOpenIcon,
   ChatBubbleLeftIcon,
   CommandLineIcon,
   DocumentTextIcon,
@@ -56,6 +57,7 @@ import { useEffect, useRef, useState } from 'react';
 
 // Import enhanced table components and markdown renderer
 import MarkdownRenderer from '../components/markdown/MarkdownRenderer';
+import MassUploadModal from '../components/MassUploadModal';
 import TableRenderer from '../components/table/TableRenderer';
 
 // 🔧 ENHANCED INTERFACES FOR SESSION-BASED DOCUMENT MANAGEMENT
@@ -205,6 +207,7 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
   // 📄 DOCUMENT STATE - Manajemen dokumen dan file upload
   const [currentDocument, setCurrentDocument] = useState<Document | null>(null);  // Selected document
   const [isUploading, setIsUploading] = useState(false);  // Upload progress state
+  const [showMassUploadModal, setShowMassUploadModal] = useState(false);  // Mass upload modal state
   
   // 📚 DOCUMENT LIBRARY STATE - Backend document library management
   const [documentLibrary, setDocumentLibrary] = useState<DocumentLibrary>({
@@ -2318,6 +2321,21 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
 
         {/* 
           ═══════════════════════════════════════════════════════════════
+          📚 MASS DOCUMENT UPLOAD BUTTON
+          ═══════════════════════════════════════════════════════════════
+        */}
+        <button 
+          className={`flex items-center gap-2 bg-gradient-to-r from-amber-600 to-amber-500 text-white rounded-lg p-3 mb-4 w-full hover:from-amber-700 hover:to-amber-600 transition-all duration-200 shadow-sm ${
+            isSidebarCollapsed ? 'justify-center' : ''
+          }`}
+          onClick={() => setShowMassUploadModal(true)}
+        >
+          <BookOpenIcon className="w-5 h-5 flex-shrink-0" />
+          {!isSidebarCollapsed && <span>Upload Documents</span>}
+        </button>
+
+        {/* 
+          ═══════════════════════════════════════════════════════════════
           📜 CHAT HISTORY SECTION - Conversation List
           ═══════════════════════════════════════════════════════════════
           Design System:
@@ -2877,7 +2895,6 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
                   )}
                 </button>
                 
-                {/* 🌐 WEB SEARCH BUTTON - FUTURE FEATURE */}
                 <button className="icon-button hover:bg-pink-200 transition-colors">
                   <GlobeAltIcon className="w-5 h-5" />
                 </button>
@@ -3205,6 +3222,21 @@ export default function Home({ initialSessionId }: HomeProps = {}) {
         • Confirmation dialogs for destructive actions
         ═══════════════════════════════════════════════════════════════
       */}
+      
+      {/* 
+        ═══════════════════════════════════════════════════════════════
+        📚 MASS DOCUMENT UPLOAD MODAL
+        ═══════════════════════════════════════════════════════════════
+      */}
+      {showMassUploadModal && (
+        <MassUploadModal 
+          onClose={() => setShowMassUploadModal(false)}
+          onSuccess={() => {
+            setShowMassUploadModal(false);
+            // Refresh document library if needed
+          }}
+        />
+      )}
       
       <style jsx>{`
         .chat-item {
